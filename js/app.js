@@ -17,8 +17,15 @@ const state = {
 // ─── ELEMENTOS DOM ───────────────────────────
 const $ = id => document.getElementById(id);
 
-const inputCamera   = $('input-camera');
 const inputGallery  = $('input-gallery');
+const btnCamera       = $('btn-camera');
+const cameraContainer = $('camera-container');
+const cameraVideo     = $('camera-video');
+const btnSnap         = $('btn-snap');
+const btnCancelCamera = $('btn-cancel-camera');
+const snapCanvas      = $('snap-canvas');
+
+let cameraStream = null;
 const captureZone   = $('capture-zone');
 const captureIdle   = $('capture-idle');
 const previewImg    = $('preview-img');
@@ -45,58 +52,7 @@ const recordsEmpty  = $('records-empty');
 const recordsList   = $('records-list');
 const btnInstall    = $('btn-install');
 const offlineBanner = $('offline-banner');
-const btnCamera       = $('btn-camera');
-const cameraContainer = $('camera-container');
-const cameraVideo     = $('camera-video');
-const btnSnap         = $('btn-snap');
-const btnCancelCamera = $('btn-cancel-camera');
-const snapCanvas      = $('snap-canvas');
 
-let cameraStream = null;
-
-btnCamera.addEventListener('click', async () => {
-  try {
-    cameraStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: false
-    });
-    cameraVideo.srcObject = cameraStream;
-    cameraContainer.classList.remove('hidden');
-    captureZone.classList.add('hidden');
-  } catch (err) {
-    alert('No se pudo acceder a la cámara. Permitir acceso en configuración.');
-  }
-});
-
-btnSnap.addEventListener('click', () => {
-  const w = cameraVideo.videoWidth;
-  const h = cameraVideo.videoHeight;
-  snapCanvas.width = w;
-  snapCanvas.height = h;
-  snapCanvas.getContext('2d').drawImage(cameraVideo, 0, 0, w, h);
-
-  // Detener stream
-  if (cameraStream) {
-    cameraStream.getTracks().forEach(t => t.stop());
-    cameraStream = null;
-  }
-  cameraContainer.classList.add('hidden');
-  captureZone.classList.remove('hidden');
-
-  snapCanvas.toBlob(blob => {
-    const file = new File([blob], 'captura.jpg', { type: 'image/jpeg' });
-    handleImageFile(file);
-  }, 'image/jpeg', 0.85);
-});
-
-btnCancelCamera.addEventListener('click', () => {
-  if (cameraStream) {
-    cameraStream.getTracks().forEach(t => t.stop());
-    cameraStream = null;
-  }
-  cameraContainer.classList.add('hidden');
-  captureZone.classList.remove('hidden');
-});
 
 // ─── SERVICE WORKER ──────────────────────────
 if ('serviceWorker' in navigator) {
@@ -153,8 +109,60 @@ function handleImageFile(file) {
   runOCR(url);
 }
 
-inputCamera.addEventListener('change', e => handleImageFile(e.target.files[0]));
 inputGallery.addEventListener('change', e => handleImageFile(e.target.files[0]));
+
+// ─── CÁMARA DIRECTA (MediaDevices) ────────────
+// Evita abrir la app de cámara nativa de Android, que es lo que dispara
+// el error "No se ha podido completar la operación anterior por falta de memoria".
+btnCamera.addEventListener('click', async () => {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    alert('Tu navegador no soporta acceso directo a la cámara.');
+    return;
+  }
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false,
+    });
+    cameraVideo.srcObject = cameraStream;
+    cameraContainer.classList.remove('hidden');
+    captureZone.classList.add('hidden');
+  } catch (err) {
+    console.error('[Cámara] error:', err);
+    alert('No se pudo acceder a la cámara. Revisá los permisos en la configuración del navegador.');
+  }
+});
+
+function stopCameraStream() {
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(t => t.stop());
+    cameraStream = null;
+  }
+  cameraContainer.classList.add('hidden');
+  captureZone.classList.remove('hidden');
+}
+
+btnSnap.addEventListener('click', () => {
+  const w = cameraVideo.videoWidth;
+  const h = cameraVideo.videoHeight;
+  snapCanvas.width = w;
+  snapCanvas.height = h;
+  snapCanvas.getContext('2d').drawImage(cameraVideo, 0, 0, w, h);
+
+  stopCameraStream();
+
+  snapCanvas.toBlob(blob => {
+    const file = new File([blob], `captura-${Date.now()}.jpg`, { type: 'image/jpeg' });
+    handleImageFile(file);
+  }, 'image/jpeg', 0.85);
+});
+
+btnCancelCamera.addEventListener('click', stopCameraStream);
+
+// Si la app pasa a segundo plano con la cámara abierta, liberamos el stream
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && cameraStream) stopCameraStream();
+});
 
 async function runOCR(imageUrl) {
   try {
@@ -310,7 +318,6 @@ btnClearOcr.addEventListener('click', () => {
   captureIdle.classList.remove('hidden');
   captureZone.classList.remove('has-image');
   previewImg.src = '';
-  inputCamera.value = '';
   inputGallery.value = '';
   updateSaveBtn();
 });

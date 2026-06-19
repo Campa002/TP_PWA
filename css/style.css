@@ -232,6 +232,29 @@ body {
   margin-bottom: 16px;
 }
 
+/* ===== CÁMARA EN VIVO (MediaDevices) ===== */
+.camera-container {
+  margin-bottom: 12px;
+}
+.camera-video {
+  display: block;
+  width: 100%;
+  max-height: 320px;
+  object-fit: cover;
+  border-radius: var(--radius-lg);
+  background: #000;
+}
+.camera-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+.btn-cancel-camera {
+  width: auto;
+  flex-shrink: 0;
+  padding: 11px 16px;
+}
+
 /* ===== OCR STATUS ===== */
 .ocr-status {
   background: var(--bg-2);

@@ -50,8 +50,21 @@
         <img id="preview-img" class="preview-img hidden" alt="Vista previa" />
       </div>
 
+      <!-- Captura directa con la cámara via MediaDevices (evita el error de memoria de Android) -->
+      <div id="camera-container" class="camera-container hidden">
+        <video id="camera-video" class="camera-video" autoplay playsinline></video>
+        <div class="camera-actions">
+          <button class="btn btn-primary btn-full" id="btn-snap" type="button">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+            Capturar foto
+          </button>
+          <button class="btn btn-outline btn-cancel-camera" id="btn-cancel-camera" type="button">✕</button>
+        </div>
+      </div>
+      <canvas id="snap-canvas" class="hidden"></canvas>
+
       <div class="capture-actions">
-        <button class="btn btn-primary" id="btn-camera">
+        <button class="btn btn-primary" id="btn-camera" type="button">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
           Cámara
         </button>
@@ -61,19 +74,6 @@
           <input type="file" id="input-gallery" accept="image/*" class="hidden" />
         </label>
       </div>
-
-      <!-- Video stream para cámara directa -->
-      <div id="camera-container" class="hidden" style="position:relative;margin-bottom:12px;">
-        <video id="camera-video" autoplay playsinline style="width:100%;border-radius:12px;background:#000;max-height:300px;object-fit:cover;"></video>
-        <div style="display:flex;gap:10px;margin-top:10px;">
-          <button class="btn btn-primary btn-full" id="btn-snap">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
-            Capturar foto
-          </button>
-          <button class="btn btn-outline" id="btn-cancel-camera" style="width:auto;padding:11px 16px;">✕</button>
-        </div>
-      </div>
-      <canvas id="snap-canvas" class="hidden"></canvas>
 
       <!-- Estado OCR -->
       <div id="ocr-status" class="ocr-status hidden">
