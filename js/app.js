@@ -106,6 +106,9 @@ inputGallery.addEventListener('change', e => handleImageFile(e.target.files[0]))
 
 async function runOCR(imageUrl) {
   try {
+    // Redimensionar imagen antes de OCR (evita error de memoria)
+    const resizedUrl = await resizeImage(imageUrl, 1800);
+
     const worker = await Tesseract.createWorker('spa+eng', 1, {
       logger: m => {
         if (m.status === 'recognizing text') {
@@ -122,13 +125,17 @@ async function runOCR(imageUrl) {
       }
     });
 
-    const { data: { text } } = await worker.recognize(imageUrl);
+    await worker.setParameters({
+      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzáéíóúÁÉÍÓÚüÜñÑ0123456789.,;:!?()-/\'"% \n',
+    });
+
+    const { data: { text } } = await worker.recognize(resizedUrl);
     await worker.terminate();
 
     progressBar.style.width = '100%';
     ocrStatusText.textContent = '¡Texto reconocido con éxito!';
 
-    state.ocrText = text.trim();
+    state.ocrText = cleanOCRText(text);
     ocrTextarea.value = state.ocrText;
 
     setTimeout(() => {
@@ -139,14 +146,40 @@ async function runOCR(imageUrl) {
 
   } catch (err) {
     console.error('[OCR] error:', err);
-    ocrStatusText.textContent = 'Error al procesar la imagen.';
+    ocrStatusText.textContent = 'Error al procesar la imagen. Intentá con una foto más pequeña.';
     progressBar.style.width = '100%';
     progressBar.style.background = 'var(--red)';
     setTimeout(() => {
       ocrStatus.classList.add('hidden');
       progressBar.style.background = '';
-    }, 2000);
+    }, 3000);
   }
+}
+
+// Redimensiona la imagen a un ancho máximo antes de procesar
+function resizeImage(url, maxWidth) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = img.width > maxWidth ? maxWidth / img.width : 1;
+      const canvas = document.createElement('canvas');
+      canvas.width  = Math.round(img.width  * scale);
+      canvas.height = Math.round(img.height * scale);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', 0.9));
+    };
+    img.src = url;
+  });
+}
+
+// Limpia el texto resultante del OCR
+function cleanOCRText(text) {
+  return text
+    .replace(/[^\w\sáéíóúÁÉÍÓÚüÜñÑ.,;:!?()\/\-'"@%\n]/g, '')  // elimina símbolos raros
+    .replace(/[ \t]{2,}/g, ' ')       // espacios múltiples → uno
+    .replace(/\n{3,}/g, '\n\n')       // más de 2 saltos → dos
+    .trim();
 }
 
 // Sincronizar textarea con state
