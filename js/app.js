@@ -166,19 +166,36 @@ function resizeImage(url, maxWidth) {
       canvas.width  = Math.round(img.width  * scale);
       canvas.height = Math.round(img.height * scale);
       const ctx = canvas.getContext('2d');
+
+      // Escala de grises + contraste alto → mejora OCR
+      ctx.filter = 'grayscale(1) contrast(1.4) brightness(1.1)';
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      resolve(canvas.toDataURL('image/jpeg', 0.9));
+
+      resolve(canvas.toDataURL('image/jpeg', 0.95));
     };
     img.src = url;
   });
 }
 
-// Limpia el texto resultante del OCR
 function cleanOCRText(text) {
   return text
-    .replace(/[^\w\sáéíóúÁÉÍÓÚüÜñÑ.,;:!?()\/\-'"@%\n]/g, '')  // elimina símbolos raros
-    .replace(/[ \t]{2,}/g, ' ')       // espacios múltiples → uno
-    .replace(/\n{3,}/g, '\n\n')       // más de 2 saltos → dos
+    // Elimina emojis y símbolos unicode raros
+    .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
+    .replace(/[\u{2600}-\u{27FF}]/gu, '')
+    // Elimina símbolos OCR típicos de emojis mal leídos: © ® ° • · ✓ → etc
+    .replace(/[©®°•·✓→←↑↓★☆♦♣♠♥]/g, '')
+    // Limpia horarios pegados al texto (ej: "secuestro14." → "secuestro")
+    .replace(/(\w)\s*\d{1,2}[.:]\d{2}\s*/g, '$1\n')
+    // Elimina líneas que son solo números o puntuación (artefactos)
+    .replace(/^[\d\s.,;:!?()\-\/'"@%+|O0]+$/gm, '')
+    // Elimina símbolos repetidos sin sentido: ,.,, / .,.5 / ,, ,,
+    .replace(/([.,]){2,}/g, '')
+    .replace(/\s+([.,;])/g, '$1')
+    // Espacios múltiples → uno
+    .replace(/[ \t]{2,}/g, ' ')
+    // Más de 2 saltos → dos
+    .replace(/\n{3,}/g, '\n\n')
+    // Líneas vacías al inicio/fin
     .trim();
 }
 
