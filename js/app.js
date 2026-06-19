@@ -45,6 +45,58 @@ const recordsEmpty  = $('records-empty');
 const recordsList   = $('records-list');
 const btnInstall    = $('btn-install');
 const offlineBanner = $('offline-banner');
+const btnCamera       = $('btn-camera');
+const cameraContainer = $('camera-container');
+const cameraVideo     = $('camera-video');
+const btnSnap         = $('btn-snap');
+const btnCancelCamera = $('btn-cancel-camera');
+const snapCanvas      = $('snap-canvas');
+
+let cameraStream = null;
+
+btnCamera.addEventListener('click', async () => {
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    });
+    cameraVideo.srcObject = cameraStream;
+    cameraContainer.classList.remove('hidden');
+    captureZone.classList.add('hidden');
+  } catch (err) {
+    alert('No se pudo acceder a la cámara. Permitir acceso en configuración.');
+  }
+});
+
+btnSnap.addEventListener('click', () => {
+  const w = cameraVideo.videoWidth;
+  const h = cameraVideo.videoHeight;
+  snapCanvas.width = w;
+  snapCanvas.height = h;
+  snapCanvas.getContext('2d').drawImage(cameraVideo, 0, 0, w, h);
+
+  // Detener stream
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(t => t.stop());
+    cameraStream = null;
+  }
+  cameraContainer.classList.add('hidden');
+  captureZone.classList.remove('hidden');
+
+  snapCanvas.toBlob(blob => {
+    const file = new File([blob], 'captura.jpg', { type: 'image/jpeg' });
+    handleImageFile(file);
+  }, 'image/jpeg', 0.85);
+});
+
+btnCancelCamera.addEventListener('click', () => {
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(t => t.stop());
+    cameraStream = null;
+  }
+  cameraContainer.classList.add('hidden');
+  captureZone.classList.remove('hidden');
+});
 
 // ─── SERVICE WORKER ──────────────────────────
 if ('serviceWorker' in navigator) {
