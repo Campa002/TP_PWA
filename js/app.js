@@ -160,40 +160,53 @@ function resizeImage(url, maxWidth) {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
-      // Escalar hacia ARRIBA si la imagen es pequeña (mínimo 1800px de ancho)
       const targetWidth = Math.max(Math.min(img.width, maxWidth), 1800);
       const scale = targetWidth / img.width;
       const w = Math.round(img.width * scale);
       const h = Math.round(img.height * scale);
 
-      // Paso 1: dibujar en canvas grande con filtros
       const canvas = document.createElement('canvas');
       canvas.width = w;
       canvas.height = h;
       const ctx = canvas.getContext('2d');
-      ctx.filter = 'grayscale(1) contrast(2) brightness(1.15)';
+
+      // Sin filtro CSS — dibujar imagen original
       ctx.drawImage(img, 0, 0, w, h);
 
-      // Paso 2: binarización manual píxel a píxel (umbral)
+      // Binarización adaptativa por bloques 16x16
       const imageData = ctx.getImageData(0, 0, w, h);
       const data = imageData.data;
-      const threshold = 140;
-      for (let i = 0; i < data.length; i += 4) {
-        const avg = (data[i] + data[i+1] + data[i+2]) / 3;
-        const val = avg > threshold ? 255 : 0;
-        data[i] = data[i+1] = data[i+2] = val;
+      const blockSize = 16;
+
+      for (let by = 0; by < h; by += blockSize) {
+        for (let bx = 0; bx < w; bx += blockSize) {
+          // Calcular promedio local del bloque
+          let sum = 0, count = 0;
+          for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
+            for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
+              const idx = ((by+dy)*w + (bx+dx)) * 4;
+              sum += (data[idx] + data[idx+1] + data[idx+2]) / 3;
+              count++;
+            }
+          }
+          // Umbral local = promedio del bloque - 15
+          const threshold = (sum / count) - 15;
+
+          // Aplicar umbral local
+          for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
+            for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
+              const idx = ((by+dy)*w + (bx+dx)) * 4;
+              const avg = (data[idx] + data[idx+1] + data[idx+2]) / 3;
+              const val = avg < threshold ? 0 : 255;
+              data[idx] = data[idx+1] = data[idx+2] = val;
+              data[idx+3] = 255;
+            }
+          }
+        }
       }
+
       ctx.putImageData(imageData, 0, 0);
-
-      // Paso 3: segundo pasaje con sharpen via convolución 3x3
-      const sharpened = document.createElement('canvas');
-      sharpened.width = w;
-      sharpened.height = h;
-      const sCtx = sharpened.getContext('2d');
-      sCtx.filter = 'contrast(1.3)';
-      sCtx.drawImage(canvas, 0, 0);
-
-      resolve(sharpened.toDataURL('image/png'));
+      resolve(canvas.toDataURL('image/png'));
     };
     img.src = url;
   });
