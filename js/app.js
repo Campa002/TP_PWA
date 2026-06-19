@@ -201,19 +201,23 @@ function resizeImage(url, maxWidth) {
 
 function cleanOCRText(text) {
   return text
+    // Bullets al inicio de línea (•, e sola, *, o letra O sola)
+    .replace(/^[\s]*[•e\-\*]\s+/gm, '- ')
     // Elimina emojis unicode completos
     .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
     .replace(/[\u{2600}-\u{27BF}]/gu, '')
-    // Elimina símbolos OCR de emojis mal leídos
+    // Símbolos OCR de emojis mal leídos
     .replace(/[©®°•·✓→←↑↓★☆♦♣♠♥@#$%^&*_=<>~`|\\{}[\]]/g, '')
-    // Limpia horarios solos en línea (18:28, 14:41, etc)
+    // Horarios solos en una línea (18:28, 14:41)
     .replace(/^\d{1,2}[.:]\d{2}\s*$/gm, '')
-    // Limpia horarios pegados al final de texto
+    // Horarios pegados al final del texto
     .replace(/\s+\d{1,2}[.:]\d{2}\s*$/gm, '')
-    // Elimina líneas que son solo ruido (números, símbolos, muy cortas sin letras)
-    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ\n]{0,3}$/gm, '')
-    // Elimina caracteres aislados raros al inicio de línea
-    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9"'¿¡(]{1,2}\s/gm, '')
+    // Líneas de 1-2 caracteres sin letras reales (avatares, íconos leídos como O, 0, etc)
+    .replace(/^.{1,2}$/gm, '')
+    // Caracteres aislados raros al inicio de línea
+    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9"'¿¡(\-]{1,2}\s/gm, '')
+    // Comas o puntos sueltos al final de línea (emojis de reacción)
+    .replace(/\s*[,\.]\s*$/gm, '')
     // Puntuación repetida
     .replace(/([.,;]){2,}/g, '$1')
     // Espacios múltiples
