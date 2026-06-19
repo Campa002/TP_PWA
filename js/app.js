@@ -156,22 +156,44 @@ async function runOCR(imageUrl) {
   }
 }
 
-// Redimensiona la imagen a un ancho máximo antes de procesar
 function resizeImage(url, maxWidth) {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
-      const scale = img.width > maxWidth ? maxWidth / img.width : 1;
+      // Escalar hacia ARRIBA si la imagen es pequeña (mínimo 1800px de ancho)
+      const targetWidth = Math.max(Math.min(img.width, maxWidth), 1800);
+      const scale = targetWidth / img.width;
+      const w = Math.round(img.width * scale);
+      const h = Math.round(img.height * scale);
+
+      // Paso 1: dibujar en canvas grande con filtros
       const canvas = document.createElement('canvas');
-      canvas.width  = Math.round(img.width  * scale);
-      canvas.height = Math.round(img.height * scale);
+      canvas.width = w;
+      canvas.height = h;
       const ctx = canvas.getContext('2d');
+      ctx.filter = 'grayscale(1) contrast(2) brightness(1.15)';
+      ctx.drawImage(img, 0, 0, w, h);
 
-      // Escala de grises + contraste alto → mejora OCR
-      ctx.filter = 'grayscale(1) contrast(1.4) brightness(1.1)';
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      // Paso 2: binarización manual píxel a píxel (umbral)
+      const imageData = ctx.getImageData(0, 0, w, h);
+      const data = imageData.data;
+      const threshold = 140;
+      for (let i = 0; i < data.length; i += 4) {
+        const avg = (data[i] + data[i+1] + data[i+2]) / 3;
+        const val = avg > threshold ? 255 : 0;
+        data[i] = data[i+1] = data[i+2] = val;
+      }
+      ctx.putImageData(imageData, 0, 0);
 
-      resolve(canvas.toDataURL('image/jpeg', 0.95));
+      // Paso 3: segundo pasaje con sharpen via convolución 3x3
+      const sharpened = document.createElement('canvas');
+      sharpened.width = w;
+      sharpened.height = h;
+      const sCtx = sharpened.getContext('2d');
+      sCtx.filter = 'contrast(1.3)';
+      sCtx.drawImage(canvas, 0, 0);
+
+      resolve(sharpened.toDataURL('image/png'));
     };
     img.src = url;
   });
@@ -179,23 +201,25 @@ function resizeImage(url, maxWidth) {
 
 function cleanOCRText(text) {
   return text
-    // Elimina emojis y símbolos unicode raros
+    // Elimina emojis unicode completos
     .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
-    .replace(/[\u{2600}-\u{27FF}]/gu, '')
-    // Elimina símbolos OCR típicos de emojis mal leídos: © ® ° • · ✓ → etc
-    .replace(/[©®°•·✓→←↑↓★☆♦♣♠♥]/g, '')
-    // Limpia horarios pegados al texto (ej: "secuestro14." → "secuestro")
-    .replace(/(\w)\s*\d{1,2}[.:]\d{2}\s*/g, '$1\n')
-    // Elimina líneas que son solo números o puntuación (artefactos)
-    .replace(/^[\d\s.,;:!?()\-\/'"@%+|O0]+$/gm, '')
-    // Elimina símbolos repetidos sin sentido: ,.,, / .,.5 / ,, ,,
-    .replace(/([.,]){2,}/g, '')
-    .replace(/\s+([.,;])/g, '$1')
-    // Espacios múltiples → uno
+    .replace(/[\u{2600}-\u{27BF}]/gu, '')
+    // Elimina símbolos OCR de emojis mal leídos
+    .replace(/[©®°•·✓→←↑↓★☆♦♣♠♥@#$%^&*_=<>~`|\\{}[\]]/g, '')
+    // Limpia horarios solos en línea (18:28, 14:41, etc)
+    .replace(/^\d{1,2}[.:]\d{2}\s*$/gm, '')
+    // Limpia horarios pegados al final de texto
+    .replace(/\s+\d{1,2}[.:]\d{2}\s*$/gm, '')
+    // Elimina líneas que son solo ruido (números, símbolos, muy cortas sin letras)
+    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ\n]{0,3}$/gm, '')
+    // Elimina caracteres aislados raros al inicio de línea
+    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9"'¿¡(]{1,2}\s/gm, '')
+    // Puntuación repetida
+    .replace(/([.,;]){2,}/g, '$1')
+    // Espacios múltiples
     .replace(/[ \t]{2,}/g, ' ')
-    // Más de 2 saltos → dos
+    // Saltos excesivos
     .replace(/\n{3,}/g, '\n\n')
-    // Líneas vacías al inicio/fin
     .trim();
 }
 
