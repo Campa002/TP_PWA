@@ -349,27 +349,26 @@ function resizeImage(url) {
 
 function cleanOCRText(text) {
   return text
-    // Bullets al inicio de línea (•, e sola, *, o letra O sola)
-    // Elimina líneas cortas con mayoría de caracteres raros (ruido de fondo/foto)
-    .replace(/^(?:[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9\/\.\-]{1,3}|.{1,2})$/gm, '')
-    // Elimina secuencias largas de mayúsculas sueltas separadas por espacios (ruido OCR)
-    .replace(/^([A-Z]\s){4,}.*$/gm, '')
-    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9]{4,}$/gm, '')
+    // Bullets al inicio de línea
     .replace(/^[\s]*[•e\-\*]\s+/gm, '- ')
-    // Elimina emojis unicode completos
+    // Elimina emojis unicode
     .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
     .replace(/[\u{2600}-\u{27BF}]/gu, '')
-    // Símbolos OCR de emojis mal leídos
+    // Símbolos raros
     .replace(/[©®°•·✓→←↑↓★☆♦♣♠♥@#$%^&*_=<>~`|\\{}[\]]/g, '')
-    // Horarios solos en una línea (18:28, 14:41)
-    .replace(/^\d{1,2}[.:]\d{2}\s*$/gm, '')
-    // Horarios pegados al final del texto
-    .replace(/\s+\d{1,2}[.:]\d{2}\s*$/gm, '')
-    // Líneas de 1-2 caracteres sin letras reales (avatares, íconos leídos como O, 0, etc)
+    // Líneas que son ruido de código de barras o foto (mayoría no alfanumérico)
+    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9\/\.\-]{4,}$/gm, '')
+    // Líneas cortas de 1-2 caracteres
     .replace(/^.{1,2}$/gm, '')
-    // Caracteres aislados raros al inicio de línea
-    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9"'¿¡(\-]{1,2}\s/gm, '')
-    // Comas o puntos sueltos al final de línea (emojis de reacción)
+    // Letras mayúsculas sueltas separadas por espacios (ruido foto DNI)
+    .replace(/^([A-Z]\s){3,}.*$/gm, '')
+    // Líneas que empiezan con números/símbolos raros antes del texto real
+    .replace(/^[\d\W]{1,4}\s+(?=[a-záéíóúA-ZÁÉÍÓÚ])/gm, '')
+    // Elimina caracteres aislados raros al inicio de línea
+    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9"'¿¡(\-]{1,3}\s/gm, '')
+    // Horarios solos en línea
+    .replace(/^\d{1,2}[.:]\d{2}\s*$/gm, '')
+    // Comas o puntos sueltos al final
     .replace(/\s*[,\.]\s*$/gm, '')
     // Puntuación repetida
     .replace(/([.,;]){2,}/g, '$1')
@@ -379,7 +378,6 @@ function cleanOCRText(text) {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
-
 // Sincronizar textarea con state
 ocrTextarea.addEventListener('input', () => {
   state.ocrText = ocrTextarea.value;
