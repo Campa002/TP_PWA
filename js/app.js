@@ -362,6 +362,13 @@ function cleanOCRText(text) {
     .replace(/^.{1,2}$/gm, '')
     // Letras mayúsculas sueltas separadas por espacios (ruido foto DNI)
     .replace(/^([A-Z]\s){3,}.*$/gm, '')
+    // Líneas con más de 40% de caracteres raros (ruido firma/barcode)
+    .replace(/^(.*)$/gm, (linea) => {
+      const raros = (linea.match(/[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9\s\/\.\-,]/g) || []).length;
+      return raros / Math.max(linea.length, 1) > 0.4 ? '' : linea;
+    })
+    // Palabras inventadas largas sin vocales (artefactos OCR)
+    .replace(/\b[^aeiouáéíóúAEIOUÁÉÍÓÚ\s]{5,}\b/g, '')
     // Líneas que empiezan con números/símbolos raros antes del texto real
     .replace(/^[\d\W]{1,4}\s+(?=[a-záéíóúA-ZÁÉÍÓÚ])/gm, '')
     // Elimina caracteres aislados raros al inicio de línea
