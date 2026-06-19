@@ -217,44 +217,97 @@ async function runOCR(imageUrl) {
 }
 
 // Redimensiona la imagen a un ancho máximo antes de procesar
-function resizeImage(url, maxWidth) {
+function resizeImage(url) {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
-      // Escalar hacia ARRIBA si la imagen es pequeña (mínimo 1800px de ancho)
-      const targetWidth = Math.max(Math.min(img.width, maxWidth), 1800);
-      const scale = targetWidth / img.width;
-      const w = Math.round(img.width * scale);
-      const h = Math.round(img.height * scale);
+      const esMobil = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      const isPWA = window.matchMedia('(display-mode: standalone)').matches;
+      const maxDim = (esMobil || isPWA) ? 1400 : 2000;
 
-      // Paso 1: dibujar en canvas grande con filtros
+      // Escalar manteniendo proporción
+      let w = img.width;
+      let h = img.height;
+      if (w > maxDim || h > maxDim) {
+        const ratio = Math.min(maxDim / w, maxDim / h);
+        w = Math.round(w * ratio);
+        h = Math.round(h * ratio);
+      }
+
       const canvas = document.createElement('canvas');
       canvas.width = w;
       canvas.height = h;
       const ctx = canvas.getContext('2d');
-      ctx.filter = 'grayscale(1) contrast(2) brightness(1.15)';
       ctx.drawImage(img, 0, 0, w, h);
 
-      // Paso 2: binarización manual píxel a píxel (umbral)
       const imageData = ctx.getImageData(0, 0, w, h);
       const data = imageData.data;
-      const threshold = 140;
+
+      // Convertir a escala de grises primero
       for (let i = 0; i < data.length; i += 4) {
-        const avg = (data[i] + data[i+1] + data[i+2]) / 3;
-        const val = avg > threshold ? 255 : 0;
-        data[i] = data[i+1] = data[i+2] = val;
+        const gris = Math.round(0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2]);
+        data[i] = data[i+1] = data[i+2] = gris;
       }
+
+      // Detectar fondo claro (documentos, DNI, tickets)
+      let sumaFila = 0;
+      for (let x = 0; x < w * 4; x += 4) sumaFila += data[x];
+      const promFila = sumaFila / w;
+      const fondoClaro = promFila > 140;
+
+      if (fondoClaro) {
+        // Binarización adaptativa por bloques — mejor para DNI y tickets
+        const blockSize = 32;
+        for (let by = 0; by < h; by += blockSize) {
+          for (let bx = 0; bx < w; bx += blockSize) {
+            let sum = 0, count = 0;
+            for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
+              for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
+                const idx = ((by+dy)*w + (bx+dx)) * 4;
+                sum += data[idx];
+                count++;
+              }
+            }
+            const threshold = (sum / count) * 0.85;
+            for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
+              for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
+                const idx = ((by+dy)*w + (bx+dx)) * 4;
+                const val = data[idx] < threshold ? 0 : 255;
+                data[idx] = data[idx+1] = data[idx+2] = val;
+              }
+            }
+          }
+        }
+      } else {
+        // Fondo oscuro: binarización con umbral fijo alto
+        const blockSize = 16;
+        for (let by = 0; by < h; by += blockSize) {
+          for (let bx = 0; bx < w; bx += blockSize) {
+            let sum = 0, count = 0;
+            for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
+              for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
+                const idx = ((by+dy)*w + (bx+dx)) * 4;
+                sum += data[idx];
+                count++;
+              }
+            }
+            const threshold = (sum / count) - 15;
+            for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
+              for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
+                const idx = ((by+dy)*w + (bx+dx)) * 4;
+                const val = data[idx] < threshold ? 0 : 255;
+                data[idx] = data[idx+1] = data[idx+2] = val;
+              }
+            }
+          }
+        }
+      }
+
       ctx.putImageData(imageData, 0, 0);
-
-      // Paso 3: segundo pasaje con sharpen via convolución 3x3
-      const sharpened = document.createElement('canvas');
-      sharpened.width = w;
-      sharpened.height = h;
-      const sCtx = sharpened.getContext('2d');
-      sCtx.filter = 'contrast(1.3)';
-      sCtx.drawImage(canvas, 0, 0);
-
-      resolve(sharpened.toDataURL('image/png'));
+      const resultado = canvas.toDataURL('image/jpeg', 0.92);
+      canvas.width = 1;
+      canvas.height = 1;
+      resolve(resultado);
     };
     img.src = url;
   });
@@ -263,6 +316,7 @@ function resizeImage(url, maxWidth) {
 function cleanOCRText(text) {
   return text
     // Bullets al inicio de línea (•, e sola, *, o letra O sola)
+    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9]{4,}$/gm, '')
     .replace(/^[\s]*[•e\-\*]\s+/gm, '- ')
     // Elimina emojis unicode completos
     .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
