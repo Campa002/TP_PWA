@@ -45,66 +45,6 @@ const recordsEmpty  = $('records-empty');
 const recordsList   = $('records-list');
 const btnInstall    = $('btn-install');
 const offlineBanner = $('offline-banner');
-const btnCamera       = $('btn-camera');
-const cameraContainer = $('camera-container');
-const cameraVideo     = $('camera-video');
-const btnSnap         = $('btn-snap');
-const btnCancelCamera = $('btn-cancel-camera');
-const snapCanvas      = $('snap-canvas');
-const inputCamera = $('input-camera');
-
-let cameraStream = null;
-
-btnCamera.addEventListener('click', async () => {
-  const esMobil = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-
-  if (esMobil && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-    try {
-      cameraStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false
-      });
-      cameraVideo.srcObject = cameraStream;
-      cameraContainer.classList.remove('hidden');
-      captureZone.classList.add('hidden');
-      return;
-    } catch (err) {
-      console.warn('[Camera] MediaDevices falló, usando input nativo');
-    }
-  }
-  // PC o fallback: input file nativo
-  inputCamera.click();
-});
-
-btnSnap.addEventListener('click', () => {
-  const w = cameraVideo.videoWidth;
-  const h = cameraVideo.videoHeight;
-  snapCanvas.width = w;
-  snapCanvas.height = h;
-  snapCanvas.getContext('2d').drawImage(cameraVideo, 0, 0, w, h);
-
-  // Detener stream
-  if (cameraStream) {
-    cameraStream.getTracks().forEach(t => t.stop());
-    cameraStream = null;
-  }
-  cameraContainer.classList.add('hidden');
-  captureZone.classList.remove('hidden');
-
-  snapCanvas.toBlob(blob => {
-    const file = new File([blob], 'captura.jpg', { type: 'image/jpeg' });
-    handleImageFile(file);
-  }, 'image/jpeg', 0.85);
-});
-
-btnCancelCamera.addEventListener('click', () => {
-  if (cameraStream) {
-    cameraStream.getTracks().forEach(t => t.stop());
-    cameraStream = null;
-  }
-  cameraContainer.classList.add('hidden');
-  captureZone.classList.remove('hidden');
-});
 
 // ─── SERVICE WORKER ──────────────────────────
 if ('serviceWorker' in navigator) {
@@ -147,13 +87,6 @@ updateOnlineStatus();
 // ─── OCR ─────────────────────────────────────
 function handleImageFile(file) {
   if (!file || !file.type.startsWith('image/')) return;
-
-  // Límite de 8MB — en PWA instalada la memoria es más restringida
-  const MAX_MB = 8;
-  if (file.size > MAX_MB * 1024 * 1024) {
-    alert(`La imagen es muy grande (${(file.size/1024/1024).toFixed(1)}MB). Usá una de menos de ${MAX_MB}MB o tomá la foto directamente desde la app.`);
-    return;
-  }
 
   const url = URL.createObjectURL(file);
   previewImg.src = url;
@@ -223,72 +156,45 @@ async function runOCR(imageUrl) {
   }
 }
 
+// Redimensiona la imagen a un ancho máximo antes de procesar
 function resizeImage(url, maxWidth) {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
-      // En PWA instalada usar máximo 1200px para no agotar memoria
-      const isPWA = window.matchMedia('(display-mode: standalone)').matches;
-      const limite = isPWA ? 1200 : 1800;
-      const targetWidth = Math.max(Math.min(img.width, limite), 800);
+      // Escalar hacia ARRIBA si la imagen es pequeña (mínimo 1800px de ancho)
+      const targetWidth = Math.max(Math.min(img.width, maxWidth), 1800);
       const scale = targetWidth / img.width;
       const w = Math.round(img.width * scale);
       const h = Math.round(img.height * scale);
 
+      // Paso 1: dibujar en canvas grande con filtros
       const canvas = document.createElement('canvas');
       canvas.width = w;
       canvas.height = h;
       const ctx = canvas.getContext('2d');
+      ctx.filter = 'grayscale(1) contrast(2) brightness(1.15)';
       ctx.drawImage(img, 0, 0, w, h);
 
+      // Paso 2: binarización manual píxel a píxel (umbral)
       const imageData = ctx.getImageData(0, 0, w, h);
       const data = imageData.data;
-
-      // Detectar fondo claro muestreando fila superior
-      let sumaBorde = 0, muestras = 0;
-      for (let x = 0; x < w * 4; x += 4) {
-        sumaBorde += (data[x] + data[x+1] + data[x+2]) / 3;
-        muestras++;
+      const threshold = 140;
+      for (let i = 0; i < data.length; i += 4) {
+        const avg = (data[i] + data[i+1] + data[i+2]) / 3;
+        const val = avg > threshold ? 255 : 0;
+        data[i] = data[i+1] = data[i+2] = val;
       }
-      const fondoClaro = (sumaBorde / muestras) > 150;
-
-      if (fondoClaro) {
-        // Documento/diagrama: escala de grises + contraste suave, sin binarizar
-        for (let i = 0; i < data.length; i += 4) {
-          const gris = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
-          const val = Math.min(255, Math.max(0, (gris - 128) * 2.0 + 128));
-          data[i] = data[i+1] = data[i+2] = val;
-          data[i+3] = 255;
-        }
-      } else {
-        // Fondo oscuro: binarización adaptativa por bloques
-        const blockSize = 16;
-        for (let by = 0; by < h; by += blockSize) {
-          for (let bx = 0; bx < w; bx += blockSize) {
-            let sum = 0, count = 0;
-            for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
-              for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
-                const idx = ((by+dy)*w + (bx+dx)) * 4;
-                sum += (data[idx] + data[idx+1] + data[idx+2]) / 3;
-                count++;
-              }
-            }
-            const threshold = (sum / count) - 15;
-            for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
-              for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
-                const idx = ((by+dy)*w + (bx+dx)) * 4;
-                const avg = (data[idx] + data[idx+1] + data[idx+2]) / 3;
-                const val = avg < threshold ? 0 : 255;
-                data[idx] = data[idx+1] = data[idx+2] = val;
-                data[idx+3] = 255;
-              }
-            }
-          }
-        }
-      }
-
       ctx.putImageData(imageData, 0, 0);
-      resolve(canvas.toDataURL('image/png'));
+
+      // Paso 3: segundo pasaje con sharpen via convolución 3x3
+      const sharpened = document.createElement('canvas');
+      sharpened.width = w;
+      sharpened.height = h;
+      const sCtx = sharpened.getContext('2d');
+      sCtx.filter = 'contrast(1.3)';
+      sCtx.drawImage(canvas, 0, 0);
+
+      resolve(sharpened.toDataURL('image/png'));
     };
     img.src = url;
   });
