@@ -167,86 +167,70 @@ async function runOCR(imageUrl) {
 }
 
 function resizeImage(url, maxWidth) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const img = new Image();
-    img.onerror = () => reject(new Error('No se pudo cargar la imagen'));
     img.onload = () => {
-      try {
-        const isPWA = window.matchMedia('(display-mode: standalone)').matches;
-        const limite = isPWA ? 1200 : 1800;
-        const targetWidth = Math.max(Math.min(img.width, Math.min(maxWidth, limite)), 800);
-        const scale = targetWidth / img.width;
-        const w = Math.round(img.width * scale);
-        const h = Math.round(img.height * scale);
+      const isPWA = window.matchMedia('(display-mode: standalone)').matches;
+      const limite = isPWA ? 1200 : 1800;
+      const targetWidth = Math.max(Math.min(img.width, limite), 800);
+      const scale = targetWidth / img.width;
+      const w = Math.round(img.width * scale);
+      const h = Math.round(img.height * scale);
 
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, w, h);
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
 
-        const imageData = ctx.getImageData(0, 0, w, h);
-        const data = imageData.data;
+      const imageData = ctx.getImageData(0, 0, w, h);
+      const data = imageData.data;
 
-        // Detectar si el fondo es claro (documento, diagrama)
-        // Muestreamos 200 píxeles de los bordes
-        let sumaBorde = 0, muestras = 0;
-        const paso = Math.floor(w / 20);
-        for (let x = 0; x < w; x += paso) {
-          const idx = x * 4;
-          sumaBorde += (data[idx] + data[idx+1] + data[idx+2]) / 3;
-          muestras++;
+      // Detectar fondo claro muestreando fila superior
+      let sumaBorde = 0, muestras = 0;
+      for (let x = 0; x < w * 4; x += 4) {
+        sumaBorde += (data[x] + data[x+1] + data[x+2]) / 3;
+        muestras++;
+      }
+      const fondoClaro = (sumaBorde / muestras) > 180;
+
+      if (fondoClaro) {
+        // Documento/diagrama: escala de grises + contraste suave, sin binarizar
+        for (let i = 0; i < data.length; i += 4) {
+          const gris = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
+          const val = Math.min(255, Math.max(0, (gris - 128) * 1.5 + 128));
+          data[i] = data[i+1] = data[i+2] = val;
+          data[i+3] = 255;
         }
-        const promedioBorde = sumaBorde / muestras;
-        const fondoClaro = promedioBorde > 180;
-
-        if (fondoClaro) {
-          // Imagen con fondo claro (documento, diagrama, organigrama)
-          // Solo aumentar contraste y convertir a grises, SIN binarizar
-          for (let i = 0; i < data.length; i += 4) {
-            const gris = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
-            // Aumentar contraste suave (factor 1.5, punto medio 128)
-            const val = Math.min(255, Math.max(0, (gris - 128) * 1.5 + 128));
-            data[i] = data[i+1] = data[i+2] = val;
-            data[i+3] = 255;
-          }
-        } else {
-          // Imagen con fondo oscuro (WhatsApp, capturas de pantalla oscuras)
-          // Binarización adaptativa por bloques
-          const blockSize = 16;
-          for (let by = 0; by < h; by += blockSize) {
-            for (let bx = 0; bx < w; bx += blockSize) {
-              let sum = 0, count = 0;
-              for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
-                for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
-                  const idx = ((by+dy)*w + (bx+dx)) * 4;
-                  sum += (data[idx] + data[idx+1] + data[idx+2]) / 3;
-                  count++;
-                }
+      } else {
+        // Fondo oscuro (WhatsApp, dark mode): binarización adaptativa por bloques
+        const blockSize = 16;
+        for (let by = 0; by < h; by += blockSize) {
+          for (let bx = 0; bx < w; bx += blockSize) {
+            let sum = 0, count = 0;
+            for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
+              for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
+                const idx = ((by+dy)*w + (bx+dx)) * 4;
+                sum += (data[idx] + data[idx+1] + data[idx+2]) / 3;
+                count++;
               }
-              const threshold = (sum / count) - 15;
-              for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
-                for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
-                  const idx = ((by+dy)*w + (bx+dx)) * 4;
-                  const avg = (data[idx] + data[idx+1] + data[idx+2]) / 3;
-                  const val = avg < threshold ? 0 : 255;
-                  data[idx] = data[idx+1] = data[idx+2] = val;
-                  data[idx+3] = 255;
-                }
+            }
+            const threshold = (sum / count) - 15;
+            for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
+              for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
+                const idx = ((by+dy)*w + (bx+dx)) * 4;
+                const avg = (data[idx] + data[idx+1] + data[idx+2]) / 3;
+                const val = avg < threshold ? 0 : 255;
+                data[idx] = data[idx+1] = data[idx+2] = val;
+                data[idx+3] = 255;
               }
             }
           }
         }
-
-        ctx.putImageData(imageData, 0, 0);
-        URL.revokeObjectURL(url);
-        resolve(canvas.toDataURL('image/jpeg', 0.85));
-        canvas.width = 0;
-        canvas.height = 0;
-
-      } catch (e) {
-        reject(e);
       }
+
+      ctx.putImageData(imageData, 0, 0);
+      resolve(canvas.toDataURL('image/png'));
     };
     img.src = url;
   });
