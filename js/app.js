@@ -12,12 +12,12 @@ const state = {
   map: null,
   marker: null,
   deferredPrompt: null,
+  cameraStream: null,
 };
 
 // ─── ELEMENTOS DOM ───────────────────────────
 const $ = id => document.getElementById(id);
 
-const inputCamera   = $('input-camera');
 const inputGallery  = $('input-gallery');
 const captureZone   = $('capture-zone');
 const captureIdle   = $('capture-idle');
@@ -84,14 +84,79 @@ window.addEventListener('online',  updateOnlineStatus);
 window.addEventListener('offline', updateOnlineStatus);
 updateOnlineStatus();
 
+// ─── CÁMARA MEDIDEVICES (Opción A — sin crash) ───
+const btnCamera       = $('btn-camera');
+const btnCameraInput  = $('input-camera');
+const cameraContainer = $('camera-container');
+const cameraVideo     = $('camera-video');
+const btnSnap         = $('btn-snap');
+const btnCancelCamera = $('btn-cancel-camera');
+const snapCanvas      = $('snap-canvas');
+
+// Opción A: MediaDevices — abre cámara dentro de la app
+btnCamera.addEventListener('click', async () => {
+  // Intentar MediaDevices primero
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    try {
+      state.cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+      cameraVideo.srcObject = state.cameraStream;
+      cameraContainer.classList.remove('hidden');
+      captureZone.classList.add('hidden');
+      return;
+    } catch (err) {
+      console.warn('[Camera] MediaDevices falló, usando input nativo:', err);
+    }
+  }
+  // Fallback Opción B: input file nativo
+  btnCameraInput.click();
+});
+
+// Capturar foto del preview de video
+btnSnap.addEventListener('click', () => {
+  const w = cameraVideo.videoWidth;
+  const h = cameraVideo.videoHeight;
+  snapCanvas.width = w;
+  snapCanvas.height = h;
+  snapCanvas.getContext('2d').drawImage(cameraVideo, 0, 0, w, h);
+
+  stopCamera();
+  cameraContainer.classList.add('hidden');
+  captureZone.classList.remove('hidden');
+
+  snapCanvas.toBlob(blob => {
+    const file = new File([blob], 'captura.jpg', { type: 'image/jpeg' });
+    handleImageFile(file);
+  }, 'image/jpeg', 0.85);
+});
+
+btnCancelCamera.addEventListener('click', () => {
+  stopCamera();
+  cameraContainer.classList.add('hidden');
+  captureZone.classList.remove('hidden');
+});
+
+function stopCamera() {
+  if (state.cameraStream) {
+    state.cameraStream.getTracks().forEach(t => t.stop());
+    state.cameraStream = null;
+  }
+  cameraVideo.srcObject = null;
+}
+
+// Opción B: input file nativo (fallback o galería)
+btnCameraInput.addEventListener('change', e => handleImageFile(e.target.files[0]));
+inputGallery.addEventListener('change', e => handleImageFile(e.target.files[0]));
+
 // ─── OCR ─────────────────────────────────────
 function handleImageFile(file) {
   if (!file || !file.type.startsWith('image/')) return;
 
-  // Límite de 8MB — en PWA instalada la memoria es más restringida
-  const MAX_MB = 8;
+  const MAX_MB = 15;
   if (file.size > MAX_MB * 1024 * 1024) {
-    alert(`La imagen es muy grande (${(file.size/1024/1024).toFixed(1)}MB). Usá una de menos de ${MAX_MB}MB o tomá la foto directamente desde la app.`);
+    alert(`La imagen es muy grande (${(file.size/1024/1024).toFixed(1)}MB). Usá una de menos de ${MAX_MB}MB.`);
     return;
   }
 
@@ -103,25 +168,18 @@ function handleImageFile(file) {
   ocrResult.classList.add('hidden');
   ocrStatus.classList.remove('hidden');
   progressBar.style.width = '0%';
-  ocrStatusText.textContent = 'Iniciando OCR…';
+  ocrStatusText.textContent = 'Preparando imagen…';
 
   runOCR(url);
 }
 
-inputCamera.addEventListener('change', e => handleImageFile(e.target.files[0]));
-inputGallery.addEventListener('change', e => handleImageFile(e.target.files[0]));
-
 async function runOCR(imageUrl) {
   try {
-    ocrStatusText.textContent = 'Preparando imagen…';
-    progressBar.style.width = '10%';
-
     const resizedUrl = await resizeImage(imageUrl);
 
     ocrStatusText.textContent = 'Iniciando motor OCR…';
-    progressBar.style.width = '20%';
+    progressBar.style.width = '15%';
 
-    // En móvil usar solo español para reducir memoria del worker
     const esMobil = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
     const idioma = esMobil ? 'spa' : 'spa+eng';
 
@@ -129,20 +187,27 @@ async function runOCR(imageUrl) {
       logger: m => {
         if (m.status === 'recognizing text') {
           const pct = Math.round(m.progress * 100);
-          progressBar.style.width = 20 + Math.round(pct * 0.8) + '%';
+          progressBar.style.width = 15 + Math.round(pct * 0.85) + '%';
           ocrStatusText.textContent = `Reconociendo texto… ${pct}%`;
         } else if (m.status === 'loading language traineddata') {
-          ocrStatusText.textContent = 'Cargando modelo…';
-          progressBar.style.width = '15%';
+          ocrStatusText.textContent = 'Cargando modelo de idioma…';
+          progressBar.style.width = '10%';
+        } else if (m.status === 'initializing api') {
+          ocrStatusText.textContent = 'Inicializando motor OCR…';
+          progressBar.style.width = '5%';
         }
       }
+    });
+
+    await worker.setParameters({
+      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzáéíóúÁÉÍÓÚüÜñÑ0123456789.,;:!?()-/\'"% \n',
     });
 
     const { data: { text } } = await worker.recognize(resizedUrl);
     await worker.terminate();
 
     progressBar.style.width = '100%';
-    ocrStatusText.textContent = '¡Texto reconocido!';
+    ocrStatusText.textContent = '¡Texto reconocido con éxito!';
 
     state.ocrText = cleanOCRText(text);
     ocrTextarea.value = state.ocrText;
@@ -155,7 +220,7 @@ async function runOCR(imageUrl) {
 
   } catch (err) {
     console.error('[OCR] error:', err);
-    ocrStatusText.textContent = 'Error al procesar. Intentá con una foto más pequeña o mejor iluminada.';
+    ocrStatusText.textContent = 'Error al procesar. Intentá con otra foto.';
     progressBar.style.width = '100%';
     progressBar.style.background = 'var(--red)';
     setTimeout(() => {
@@ -171,15 +236,12 @@ function resizeImage(url) {
     img.onload = () => {
       const esMobil = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
       const isPWA = window.matchMedia('(display-mode: standalone)').matches;
-
-      // Móvil: máximo 800px. Desktop: máximo 1600px
-      const maxW = (esMobil || isPWA) ? 800 : 1600;
-      const maxH = (esMobil || isPWA) ? 800 : 1600;
+      const maxW = (esMobil || isPWA) ? 900 : 1600;
+      const maxH = (esMobil || isPWA) ? 900 : 1600;
 
       let w = img.width;
       let h = img.height;
 
-      // Escalar proporcionalmente si supera el límite
       if (w > maxW || h > maxH) {
         const ratio = Math.min(maxW / w, maxH / h);
         w = Math.round(w * ratio);
@@ -192,13 +254,9 @@ function resizeImage(url) {
       const ctx = canvas.getContext('2d');
       ctx.drawImage(img, 0, 0, w, h);
 
-      // JPEG con calidad 0.8 — mucho menos memoria que PNG
-      const resultado = canvas.toDataURL('image/jpeg', 0.8);
-
-      // Liberar canvas inmediatamente
+      const resultado = canvas.toDataURL('image/jpeg', 0.85);
       canvas.width = 1;
       canvas.height = 1;
-
       resolve(resultado);
     };
     img.src = url;
@@ -207,28 +265,17 @@ function resizeImage(url) {
 
 function cleanOCRText(text) {
   return text
-    // Bullets al inicio de línea (•, e sola, *, o letra O sola)
     .replace(/^[\s]*[•e\-\*]\s+/gm, '- ')
-    // Elimina emojis unicode completos
     .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
     .replace(/[\u{2600}-\u{27BF}]/gu, '')
-    // Símbolos OCR de emojis mal leídos
     .replace(/[©®°•·✓→←↑↓★☆♦♣♠♥@#$%^&*_=<>~`|\\{}[\]]/g, '')
-    // Horarios solos en una línea (18:28, 14:41)
     .replace(/^\d{1,2}[.:]\d{2}\s*$/gm, '')
-    // Horarios pegados al final del texto
     .replace(/\s+\d{1,2}[.:]\d{2}\s*$/gm, '')
-    // Líneas de 1-2 caracteres sin letras reales (avatares, íconos leídos como O, 0, etc)
     .replace(/^.{1,2}$/gm, '')
-    // Caracteres aislados raros al inicio de línea
     .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9"'¿¡(\-]{1,2}\s/gm, '')
-    // Comas o puntos sueltos al final de línea (emojis de reacción)
     .replace(/\s*[,\.]\s*$/gm, '')
-    // Puntuación repetida
     .replace(/([.,;]){2,}/g, '$1')
-    // Espacios múltiples
     .replace(/[ \t]{2,}/g, ' ')
-    // Saltos excesivos
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
@@ -246,7 +293,6 @@ btnCopy.addEventListener('click', () => {
     copyToast.classList.remove('hidden');
     setTimeout(() => copyToast.classList.add('hidden'), 1800);
   }).catch(() => {
-    // Fallback para móviles sin clipboard API
     ocrTextarea.select();
     document.execCommand('copy');
     copyToast.classList.remove('hidden');
@@ -263,7 +309,7 @@ btnClearOcr.addEventListener('click', () => {
   captureIdle.classList.remove('hidden');
   captureZone.classList.remove('has-image');
   previewImg.src = '';
-  inputCamera.value = '';
+  if (btnCameraInput) btnCameraInput.value = '';
   inputGallery.value = '';
   updateSaveBtn();
 });
@@ -276,14 +322,12 @@ function getLocation() {
     showGeoError('Tu navegador no soporta geolocalización.');
     return;
   }
-
   btnLocation.disabled = true;
   btnLocation.innerHTML = `
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin 1s linear infinite">
       <path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0"/>
     </svg>
     Obteniendo ubicación…`;
-
   navigator.geolocation.getCurrentPosition(
     onGeoSuccess,
     onGeoError,
@@ -294,24 +338,19 @@ function getLocation() {
 function onGeoSuccess(pos) {
   const { latitude: lat, longitude: lon, accuracy: acc } = pos.coords;
   const now = new Date(pos.timestamp);
-
   state.coords = { lat, lon, acc, time: now.toISOString() };
-
   coordLat.textContent  = lat.toFixed(6) + '°';
   coordLon.textContent  = lon.toFixed(6) + '°';
   coordAcc.textContent  = Math.round(acc) + ' m';
   coordTime.textContent = now.toLocaleTimeString('es-AR');
-
   geoData.classList.remove('hidden');
   geoError.classList.add('hidden');
-
   btnLocation.disabled = false;
   btnLocation.innerHTML = `
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <circle cx="12" cy="10" r="3"/><path d="M12 2a8 8 0 00-8 8c0 5.25 8 13 8 13s8-7.75 8-13a8 8 0 00-8-8z"/>
     </svg>
     Actualizar ubicación`;
-
   initMap(lat, lon);
   updateSaveBtn();
 }
@@ -344,22 +383,13 @@ function initMap(lat, lon) {
       maxZoom: 19,
     }).addTo(state.map);
   }
-
   state.map.setView([lat, lon], 16);
-
   const icon = L.divIcon({
-    html: `<div style="
-      width:18px;height:18px;
-      background:var(--accent);
-      border:3px solid white;
-      border-radius:50%;
-      box-shadow:0 2px 8px rgba(0,0,0,.5)
-    "></div>`,
+    html: `<div style="width:18px;height:18px;background:var(--accent);border:3px solid white;border-radius:50%;box-shadow:0 2px 8px rgba(0,0,0,.5)"></div>`,
     className: '',
     iconSize: [18, 18],
     iconAnchor: [9, 9],
   });
-
   if (state.marker) {
     state.marker.setLatLng([lat, lon]);
   } else {
@@ -387,20 +417,16 @@ function updateSaveBtn() {
 
 btnSave.addEventListener('click', () => {
   if (!state.ocrText.trim() || !state.coords) return;
-
   const record = {
     id:     Date.now(),
     date:   new Date().toLocaleString('es-AR'),
     text:   state.ocrText.trim(),
     coords: { ...state.coords },
   };
-
   const records = getRecords();
   records.unshift(record);
   saveRecords(records);
   renderRecords();
-
-  // Feedback visual
   btnSave.textContent = '✓ Guardado';
   btnSave.disabled = true;
   setTimeout(() => {
@@ -417,18 +443,15 @@ btnSave.addEventListener('click', () => {
 
 function renderRecords() {
   const records = getRecords();
-
   if (records.length === 0) {
     recordsEmpty.classList.remove('hidden');
     recordsList.classList.add('hidden');
     btnExport.classList.add('hidden');
     return;
   }
-
   recordsEmpty.classList.add('hidden');
   recordsList.classList.remove('hidden');
   btnExport.classList.remove('hidden');
-
   recordsList.innerHTML = records.map((r, i) => `
     <div class="record-card" id="record-${r.id}">
       <div class="record-card-header" onclick="toggleRecord(${r.id})">
@@ -468,23 +491,14 @@ window.deleteRecord = function(id) {
 btnExport.addEventListener('click', () => {
   const records = getRecords();
   if (!records.length) return;
-
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-
-  const marginL = 20;
-  const marginR = 20;
-  const pageW = 210;
+  const marginL = 20, marginR = 20, pageW = 210;
   const contentW = pageW - marginL - marginR;
   let y = 20;
-
   const checkPage = (needed = 10) => {
-    if (y + needed > 280) {
-      doc.addPage();
-      y = 20;
-    }
+    if (y + needed > 280) { doc.addPage(); y = 20; }
   };
-
   const writeText = (text, fontSize, isBold, color = [30, 30, 30]) => {
     doc.setFontSize(fontSize);
     doc.setFont('helvetica', isBold ? 'bold' : 'normal');
@@ -494,8 +508,6 @@ btnExport.addEventListener('click', () => {
     doc.text(lines, marginL, y);
     y += lines.length * (fontSize * 0.4) + 2;
   };
-
-  // Título principal
   doc.setFillColor(15, 23, 42);
   doc.rect(0, 0, 210, 30, 'F');
   doc.setFontSize(18);
@@ -506,29 +518,17 @@ btnExport.addEventListener('click', () => {
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(148, 163, 184);
   doc.text('Reporte de Relevamientos de Campo', marginL, 21);
-
-  // Fecha de exportación
   const fechaExport = new Date().toLocaleString('es-AR');
   doc.setFontSize(9);
-  doc.setTextColor(148, 163, 184);
   doc.text(`Exportado: ${fechaExport}`, pageW - marginR - 60, 21);
-
   y = 40;
-
-  // Resumen
   writeText(`Total de relevamientos: ${records.length}`, 11, true, [15, 23, 42]);
   y += 4;
-
-  // Línea divisoria
   doc.setDrawColor(200, 200, 200);
   doc.line(marginL, y, pageW - marginR, y);
   y += 8;
-
-  // Cada registro
   records.forEach((r, i) => {
     checkPage(40);
-
-    // Encabezado del registro
     doc.setFillColor(241, 245, 249);
     doc.roundedRect(marginL, y - 4, contentW, 10, 2, 2, 'F');
     doc.setFontSize(11);
@@ -540,45 +540,33 @@ btnExport.addEventListener('click', () => {
     doc.setTextColor(100, 116, 139);
     doc.text(r.date, marginL + 18, y + 3);
     y += 12;
-
-    // Texto OCR
     writeText('Texto reconocido:', 9, true, [71, 85, 105]);
     doc.setFontSize(10);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(30, 30, 30);
     const textLines = doc.splitTextToSize(r.text || '(sin texto)', contentW - 4);
     checkPage(textLines.length * 4 + 6);
-
-    // Fondo para el texto
     const textBoxH = textLines.length * 4 + 6;
     doc.setFillColor(248, 250, 252);
     doc.setDrawColor(226, 232, 240);
     doc.roundedRect(marginL, y - 2, contentW, textBoxH, 2, 2, 'FD');
     doc.text(textLines, marginL + 3, y + 3);
     y += textBoxH + 4;
-
-    // Coordenadas
     writeText('Ubicación:', 9, true, [71, 85, 105]);
     const lat = r.coords.lat.toFixed(6);
     const lon = r.coords.lon.toFixed(6);
     const acc = Math.round(r.coords.acc);
     writeText(`Latitud: ${lat}   Longitud: ${lon}   Precisión: ±${acc}m`, 9, false, [30, 30, 30]);
-
-    // Link a Google Maps
     const mapsUrl = `https://maps.google.com/?q=${lat},${lon}`;
     doc.setFontSize(9);
     doc.setTextColor(14, 165, 233);
     doc.textWithLink('Ver en Google Maps →', marginL, y, { url: mapsUrl });
     y += 5;
-
-    // Separador entre registros
     y += 4;
     doc.setDrawColor(226, 232, 240);
     doc.line(marginL, y, pageW - marginR, y);
     y += 8;
   });
-
-  // Pie de página en todas las páginas
   const totalPages = doc.getNumberOfPages();
   for (let p = 1; p <= totalPages; p++) {
     doc.setPage(p);
@@ -587,7 +575,6 @@ btnExport.addEventListener('click', () => {
     doc.text(`FieldScan — Página ${p} de ${totalPages}`, marginL, 292);
     doc.text('campa002.github.io/TP_PWA', pageW - marginR - 45, 292);
   }
-
   doc.save(`fieldscan_reporte_${Date.now()}.pdf`);
 });
 
@@ -600,7 +587,6 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-// CSS para spin (sin agregar un archivo extra)
 const style = document.createElement('style');
 style.textContent = `@keyframes spin { to { transform: rotate(360deg); } }`;
 document.head.appendChild(style);
