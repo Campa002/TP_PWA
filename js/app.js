@@ -113,34 +113,36 @@ inputGallery.addEventListener('change', e => handleImageFile(e.target.files[0]))
 
 async function runOCR(imageUrl) {
   try {
-    // Redimensionar imagen antes de OCR (evita error de memoria)
-    const resizedUrl = await resizeImage(imageUrl, 1800);
+    ocrStatusText.textContent = 'Preparando imagen…';
+    progressBar.style.width = '10%';
 
-    const worker = await Tesseract.createWorker('spa+eng', 1, {
+    const resizedUrl = await resizeImage(imageUrl);
+
+    ocrStatusText.textContent = 'Iniciando motor OCR…';
+    progressBar.style.width = '20%';
+
+    // En móvil usar solo español para reducir memoria del worker
+    const esMobil = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    const idioma = esMobil ? 'spa' : 'spa+eng';
+
+    const worker = await Tesseract.createWorker(idioma, 1, {
       logger: m => {
         if (m.status === 'recognizing text') {
           const pct = Math.round(m.progress * 100);
-          progressBar.style.width = pct + '%';
+          progressBar.style.width = 20 + Math.round(pct * 0.8) + '%';
           ocrStatusText.textContent = `Reconociendo texto… ${pct}%`;
         } else if (m.status === 'loading language traineddata') {
-          ocrStatusText.textContent = 'Cargando modelo de idioma…';
-          progressBar.style.width = '20%';
-        } else if (m.status === 'initializing api') {
-          ocrStatusText.textContent = 'Inicializando motor OCR…';
-          progressBar.style.width = '5%';
+          ocrStatusText.textContent = 'Cargando modelo…';
+          progressBar.style.width = '15%';
         }
       }
-    });
-
-    await worker.setParameters({
-      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzáéíóúÁÉÍÓÚüÜñÑ0123456789.,;:!?()-/\'"% \n',
     });
 
     const { data: { text } } = await worker.recognize(resizedUrl);
     await worker.terminate();
 
     progressBar.style.width = '100%';
-    ocrStatusText.textContent = '¡Texto reconocido con éxito!';
+    ocrStatusText.textContent = '¡Texto reconocido!';
 
     state.ocrText = cleanOCRText(text);
     ocrTextarea.value = state.ocrText;
@@ -153,7 +155,7 @@ async function runOCR(imageUrl) {
 
   } catch (err) {
     console.error('[OCR] error:', err);
-    ocrStatusText.textContent = 'Error al procesar la imagen. Intentá con una foto más pequeña.';
+    ocrStatusText.textContent = 'Error al procesar. Intentá con una foto más pequeña o mejor iluminada.';
     progressBar.style.width = '100%';
     progressBar.style.background = 'var(--red)';
     setTimeout(() => {
@@ -163,17 +165,26 @@ async function runOCR(imageUrl) {
   }
 }
 
-function resizeImage(url, maxWidth) {
+function resizeImage(url) {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
-      // En PWA instalada usar máximo 1200px para no agotar memoria
+      const esMobil = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
       const isPWA = window.matchMedia('(display-mode: standalone)').matches;
-      const limite = isPWA ? 1200 : 1800;
-      const targetWidth = Math.max(Math.min(img.width, limite), 800);
-      const scale = targetWidth / img.width;
-      const w = Math.round(img.width * scale);
-      const h = Math.round(img.height * scale);
+
+      // Móvil: máximo 800px. Desktop: máximo 1600px
+      const maxW = (esMobil || isPWA) ? 800 : 1600;
+      const maxH = (esMobil || isPWA) ? 800 : 1600;
+
+      let w = img.width;
+      let h = img.height;
+
+      // Escalar proporcionalmente si supera el límite
+      if (w > maxW || h > maxH) {
+        const ratio = Math.min(maxW / w, maxH / h);
+        w = Math.round(w * ratio);
+        h = Math.round(h * ratio);
+      }
 
       const canvas = document.createElement('canvas');
       canvas.width = w;
@@ -181,54 +192,14 @@ function resizeImage(url, maxWidth) {
       const ctx = canvas.getContext('2d');
       ctx.drawImage(img, 0, 0, w, h);
 
-      const imageData = ctx.getImageData(0, 0, w, h);
-      const data = imageData.data;
+      // JPEG con calidad 0.8 — mucho menos memoria que PNG
+      const resultado = canvas.toDataURL('image/jpeg', 0.8);
 
-      // Detectar fondo claro muestreando fila superior
-      let sumaBorde = 0, muestras = 0;
-      for (let x = 0; x < w * 4; x += 4) {
-        sumaBorde += (data[x] + data[x+1] + data[x+2]) / 3;
-        muestras++;
-      }
-      const fondoClaro = (sumaBorde / muestras) > 150;
+      // Liberar canvas inmediatamente
+      canvas.width = 1;
+      canvas.height = 1;
 
-      if (fondoClaro) {
-        // Documento/diagrama: escala de grises + contraste suave, sin binarizar
-        for (let i = 0; i < data.length; i += 4) {
-          const gris = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
-          const val = Math.min(255, Math.max(0, (gris - 128) * 2.0 + 128));
-          data[i] = data[i+1] = data[i+2] = val;
-          data[i+3] = 255;
-        }
-      } else {
-        // Fondo oscuro: binarización adaptativa por bloques
-        const blockSize = 16;
-        for (let by = 0; by < h; by += blockSize) {
-          for (let bx = 0; bx < w; bx += blockSize) {
-            let sum = 0, count = 0;
-            for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
-              for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
-                const idx = ((by+dy)*w + (bx+dx)) * 4;
-                sum += (data[idx] + data[idx+1] + data[idx+2]) / 3;
-                count++;
-              }
-            }
-            const threshold = (sum / count) - 15;
-            for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
-              for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
-                const idx = ((by+dy)*w + (bx+dx)) * 4;
-                const avg = (data[idx] + data[idx+1] + data[idx+2]) / 3;
-                const val = avg < threshold ? 0 : 255;
-                data[idx] = data[idx+1] = data[idx+2] = val;
-                data[idx+3] = 255;
-              }
-            }
-          }
-        }
-      }
-
-      ctx.putImageData(imageData, 0, 0);
-      resolve(canvas.toDataURL('image/png'));
+      resolve(resultado);
     };
     img.src = url;
   });
