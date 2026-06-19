@@ -51,21 +51,29 @@ const cameraVideo     = $('camera-video');
 const btnSnap         = $('btn-snap');
 const btnCancelCamera = $('btn-cancel-camera');
 const snapCanvas      = $('snap-canvas');
+const inputCamera = $('input-camera');
 
 let cameraStream = null;
 
 btnCamera.addEventListener('click', async () => {
-  try {
-    cameraStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: false
-    });
-    cameraVideo.srcObject = cameraStream;
-    cameraContainer.classList.remove('hidden');
-    captureZone.classList.add('hidden');
-  } catch (err) {
-    alert('No se pudo acceder a la cámara. Permitir acceso en configuración.');
+  const esMobil = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+  if (esMobil && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    try {
+      cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+      cameraVideo.srcObject = cameraStream;
+      cameraContainer.classList.remove('hidden');
+      captureZone.classList.add('hidden');
+      return;
+    } catch (err) {
+      console.warn('[Camera] MediaDevices falló, usando input nativo');
+    }
   }
+  // PC o fallback: input file nativo
+  inputCamera.click();
 });
 
 btnSnap.addEventListener('click', () => {
