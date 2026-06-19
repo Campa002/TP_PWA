@@ -358,17 +358,17 @@ function cleanOCRText(text) {
     // Elimina emojis unicode
     .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
     .replace(/[\u{2600}-\u{27BF}]/gu, '')
-    // Símbolos raros (pero conservamos / . - , para fechas y números de documento)
+    // Símbolos raros (conservamos / . - , para fechas y números de documento)
     .replace(/[©®°•·✓→←↑↓★☆♦♣♠♥@#$%^&*_=<>~`|\\{}[\]]/g, '')
-    // Líneas que son puro ruido (mayoría no alfanumérico), pero no si tienen dígitos largos (nro doc)
+    // Líneas que son puro ruido (mayoría no alfanumérico), pero conserva nros de documento
     .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9\/\.\-]{4,}$/gm, (linea) => {
-      // Conservar si parece un número de documento (6+ dígitos)
       return /\d{6,}/.test(linea) ? linea : '';
     })
     // Líneas de 1 solo carácter (ruido)
     .replace(/^.{1}$/gm, '')
+    // Líneas con patrón de letras/números sueltos separados por espacios (ruido de firma superpuesta)
+    .replace(/^(\S{1,2}\s){3,}\S{0,2}$/gm, '')
     // Líneas con más de 50% de caracteres raros (ruido firma/barcode)
-    // Umbral más alto que antes para no eliminar líneas con mezcla de idiomas
     .replace(/^(.*)$/gm, (linea) => {
       if (linea.trim().length < 3) return linea;
       const raros = (linea.match(/[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9\s\/\.\-,]/g) || []).length;
