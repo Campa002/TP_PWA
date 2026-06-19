@@ -461,13 +461,128 @@ window.deleteRecord = function(id) {
 
 btnExport.addEventListener('click', () => {
   const records = getRecords();
-  const blob = new Blob([JSON.stringify(records, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `fieldscan_export_${Date.now()}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
+  if (!records.length) return;
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+
+  const marginL = 20;
+  const marginR = 20;
+  const pageW = 210;
+  const contentW = pageW - marginL - marginR;
+  let y = 20;
+
+  const checkPage = (needed = 10) => {
+    if (y + needed > 280) {
+      doc.addPage();
+      y = 20;
+    }
+  };
+
+  const writeText = (text, fontSize, isBold, color = [30, 30, 30]) => {
+    doc.setFontSize(fontSize);
+    doc.setFont('helvetica', isBold ? 'bold' : 'normal');
+    doc.setTextColor(...color);
+    const lines = doc.splitTextToSize(text, contentW);
+    checkPage(lines.length * (fontSize * 0.4));
+    doc.text(lines, marginL, y);
+    y += lines.length * (fontSize * 0.4) + 2;
+  };
+
+  // Título principal
+  doc.setFillColor(15, 23, 42);
+  doc.rect(0, 0, 210, 30, 'F');
+  doc.setFontSize(18);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(56, 189, 248);
+  doc.text('FieldScan', marginL, 13);
+  doc.setFontSize(10);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(148, 163, 184);
+  doc.text('Reporte de Relevamientos de Campo', marginL, 21);
+
+  // Fecha de exportación
+  const fechaExport = new Date().toLocaleString('es-AR');
+  doc.setFontSize(9);
+  doc.setTextColor(148, 163, 184);
+  doc.text(`Exportado: ${fechaExport}`, pageW - marginR - 60, 21);
+
+  y = 40;
+
+  // Resumen
+  writeText(`Total de relevamientos: ${records.length}`, 11, true, [15, 23, 42]);
+  y += 4;
+
+  // Línea divisoria
+  doc.setDrawColor(200, 200, 200);
+  doc.line(marginL, y, pageW - marginR, y);
+  y += 8;
+
+  // Cada registro
+  records.forEach((r, i) => {
+    checkPage(40);
+
+    // Encabezado del registro
+    doc.setFillColor(241, 245, 249);
+    doc.roundedRect(marginL, y - 4, contentW, 10, 2, 2, 'F');
+    doc.setFontSize(11);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(15, 23, 42);
+    doc.text(`#${String(records.length - i).padStart(3, '0')}`, marginL + 3, y + 3);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(100, 116, 139);
+    doc.text(r.date, marginL + 18, y + 3);
+    y += 12;
+
+    // Texto OCR
+    writeText('Texto reconocido:', 9, true, [71, 85, 105]);
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(30, 30, 30);
+    const textLines = doc.splitTextToSize(r.text || '(sin texto)', contentW - 4);
+    checkPage(textLines.length * 4 + 6);
+
+    // Fondo para el texto
+    const textBoxH = textLines.length * 4 + 6;
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(226, 232, 240);
+    doc.roundedRect(marginL, y - 2, contentW, textBoxH, 2, 2, 'FD');
+    doc.text(textLines, marginL + 3, y + 3);
+    y += textBoxH + 4;
+
+    // Coordenadas
+    writeText('Ubicación:', 9, true, [71, 85, 105]);
+    const lat = r.coords.lat.toFixed(6);
+    const lon = r.coords.lon.toFixed(6);
+    const acc = Math.round(r.coords.acc);
+    writeText(`Latitud: ${lat}   Longitud: ${lon}   Precisión: ±${acc}m`, 9, false, [30, 30, 30]);
+
+    // Link a Google Maps
+    const mapsUrl = `https://maps.google.com/?q=${lat},${lon}`;
+    doc.setFontSize(9);
+    doc.setTextColor(14, 165, 233);
+    doc.textWithLink('Ver en Google Maps →', marginL, y, { url: mapsUrl });
+    y += 5;
+
+    // Separador entre registros
+    y += 4;
+    doc.setDrawColor(226, 232, 240);
+    doc.line(marginL, y, pageW - marginR, y);
+    y += 8;
+  });
+
+  // Pie de página en todas las páginas
+  const totalPages = doc.getNumberOfPages();
+  for (let p = 1; p <= totalPages; p++) {
+    doc.setPage(p);
+    doc.setFontSize(8);
+    doc.setTextColor(148, 163, 184);
+    doc.text(`FieldScan — Página ${p} de ${totalPages}`, marginL, 292);
+    doc.text('campa002.github.io/TP_PWA', pageW - marginR - 45, 292);
+  }
+
+  doc.save(`fieldscan_reporte_${Date.now()}.pdf`);
 });
 
 // ─── UTILS ───────────────────────────────────
