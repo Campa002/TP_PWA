@@ -187,6 +187,11 @@ async function runOCR(imageUrl) {
 
     await worker.setParameters({
       tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzáéíóúÁÉÍÓÚüÜñÑ0123456789.,;:!?()-/\'"% \n',
+      // PSM 11 = "sparse text": busca texto donde aparezca, sin asumir
+      // que toda la imagen es un único bloque/tabla. Esto es clave para
+      // que no intente leer como texto el cuadriculado de la hoja, los
+      // bordes de un documento o reflejos de luz (glare) en la foto.
+      tessedit_pageseg_mode: '11',
     });
 
     const { data: { text } } = await worker.recognize(resizedUrl);
@@ -217,131 +222,31 @@ async function runOCR(imageUrl) {
 }
 
 // Redimensiona la imagen a un ancho máximo antes de procesar
-function resizeImage(url) {
+function resizeImage(url, maxWidth) {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
-      const esMobil = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-      const isPWA = window.matchMedia('(display-mode: standalone)').matches;
-      const maxDim = (esMobil || isPWA) ? 1400 : 2000;
+      // Escalar hacia ARRIBA si la imagen es pequeña (mínimo 1800px de ancho)
+      const targetWidth = Math.max(Math.min(img.width, maxWidth), 1800);
+      const scale = targetWidth / img.width;
+      const w = Math.round(img.width * scale);
+      const h = Math.round(img.height * scale);
 
-      // Paso 1: dibujar imagen completa
-      let w = img.width;
-      let h = img.height;
-      if (w > maxDim || h > maxDim) {
-        const ratio = Math.min(maxDim / w, maxDim / h);
-        w = Math.round(w * ratio);
-        h = Math.round(h * ratio);
-      }
-
+      // Solo escala de grises + un realce leve de contraste/brillo.
+      // OJO: a propósito NO se binariza (blanco/negro puro) acá. Tesseract
+      // trae su propio binarizador interno (Otsu/adaptativo de Leptonica),
+      // mucho más robusto que un umbral casero: un umbral fijo o por bloques
+      // hecho a mano termina interpretando cuadriculados, bordes de
+      // documentos o reflejos de luz como si fueran texto, y además pierde
+      // matices de gris que el motor de Tesseract sí sabe aprovechar.
       const canvas = document.createElement('canvas');
       canvas.width = w;
       canvas.height = h;
       const ctx = canvas.getContext('2d');
+      ctx.filter = 'grayscale(1) contrast(1.15) brightness(1.05)';
       ctx.drawImage(img, 0, 0, w, h);
 
-      const imageData = ctx.getImageData(0, 0, w, h);
-      const data = imageData.data;
-
-      // Paso 2: convertir a grises
-      for (let i = 0; i < data.length; i += 4) {
-        const g = Math.round(0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2]);
-        data[i] = data[i+1] = data[i+2] = g;
-      }
-      ctx.putImageData(imageData, 0, 0);
-
-      // Paso 3: detectar bounding box del contenido (recorte automático)
-      // Buscar filas con varianza alta (tienen texto/contenido)
-      let top = 0, bottom = h - 1, left = 0, right = w - 1;
-      const margen = 20; // px de margen extra alrededor del contenido
-
-      // Buscar fila superior con contenido
-      for (let y = 0; y < h; y++) {
-        let varianza = 0;
-        for (let x = 0; x < w; x++) {
-          const idx = (y * w + x) * 4;
-          varianza += Math.abs(data[idx] - 128);
-        }
-        if (varianza / w > 25) { top = Math.max(0, y - margen); break; }
-      }
-
-      // Buscar fila inferior con contenido
-      for (let y = h - 1; y >= 0; y--) {
-        let varianza = 0;
-        for (let x = 0; x < w; x++) {
-          const idx = (y * w + x) * 4;
-          varianza += Math.abs(data[idx] - 128);
-        }
-        if (varianza / w > 15) { bottom = Math.min(h - 1, y + margen); break; }
-      }
-
-      // Buscar columna izquierda con contenido
-      for (let x = 0; x < w; x++) {
-        let varianza = 0;
-        for (let y = top; y < bottom; y++) {
-          const idx = (y * w + x) * 4;
-          varianza += Math.abs(data[idx] - 128);
-        }
-        if (varianza / (bottom - top) > 15) { left = Math.max(0, x - margen); break; }
-      }
-
-      // Buscar columna derecha con contenido
-      for (let x = w - 1; x >= 0; x--) {
-        let varianza = 0;
-        for (let y = top; y < bottom; y++) {
-          const idx = (y * w + x) * 4;
-          varianza += Math.abs(data[idx] - 128);
-        }
-        if (varianza / (bottom - top) > 15) { right = Math.min(w - 1, x + margen); break; }
-      }
-
-      const cropW = right - left;
-      const cropH = bottom - top;
-
-      // Paso 4: dibujar solo la zona recortada
-      const canvas2 = document.createElement('canvas');
-      canvas2.width = cropW;
-      canvas2.height = cropH;
-      const ctx2 = canvas2.getContext('2d');
-      ctx2.drawImage(canvas, left, top, cropW, cropH, 0, 0, cropW, cropH);
-
-      // Paso 5: binarización adaptativa sobre la zona recortada
-      const id2 = ctx2.getImageData(0, 0, cropW, cropH);
-      const d2 = id2.data;
-      const blockSize = 32;
-
-      // Aumentar contraste para mejorar separación texto/fondo
-      for (let i = 0; i < d2.length; i += 4) {
-        const val = Math.min(255, Math.max(0, (d2[i] - 128) * 1.8 + 128));
-        d2[i] = d2[i+1] = d2[i+2] = val;
-      }
-
-      for (let by = 0; by < cropH; by += blockSize) {
-        for (let bx = 0; bx < cropW; bx += blockSize) {
-          let sum = 0, count = 0;
-          for (let dy = 0; dy < blockSize && by+dy < cropH; dy++) {
-            for (let dx = 0; dx < blockSize && bx+dx < cropW; dx++) {
-              const idx = ((by+dy)*cropW + (bx+dx)) * 4;
-              sum += d2[idx];
-              count++;
-            }
-          }
-          const threshold = (sum / count) * 0.85;
-          for (let dy = 0; dy < blockSize && by+dy < cropH; dy++) {
-            for (let dx = 0; dx < blockSize && bx+dx < cropW; dx++) {
-              const idx = ((by+dy)*cropW + (bx+dx)) * 4;
-              const val = d2[idx] < threshold ? 0 : 255;
-              d2[idx] = d2[idx+1] = d2[idx+2] = val;
-            }
-          }
-        }
-      }
-      ctx2.putImageData(id2, 0, 0);
-
-      const resultado = canvas2.toDataURL('image/jpeg', 0.92);
-      canvas.width = 1; canvas.height = 1;
-      canvas2.width = 1; canvas2.height = 1;
-      resolve(resultado);
+      resolve(canvas.toDataURL('image/png'));
     };
     img.src = url;
   });
@@ -349,33 +254,22 @@ function resizeImage(url) {
 
 function cleanOCRText(text) {
   return text
-    // Bullets al inicio de línea
+    // Bullets al inicio de línea (•, e sola, *, o letra O sola)
     .replace(/^[\s]*[•e\-\*]\s+/gm, '- ')
-    // Elimina emojis unicode
+    // Elimina emojis unicode completos
     .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
     .replace(/[\u{2600}-\u{27BF}]/gu, '')
-    // Símbolos raros
+    // Símbolos OCR de emojis mal leídos
     .replace(/[©®°•·✓→←↑↓★☆♦♣♠♥@#$%^&*_=<>~`|\\{}[\]]/g, '')
-    // Líneas que son ruido de código de barras o foto (mayoría no alfanumérico)
-    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9\/\.\-]{4,}$/gm, '')
-    // Líneas cortas de 1-2 caracteres
-    .replace(/^.{1,2}$/gm, '')
-    // Letras mayúsculas sueltas separadas por espacios (ruido foto DNI)
-    .replace(/^([A-Z]\s){3,}.*$/gm, '')
-    // Líneas con más de 40% de caracteres raros (ruido firma/barcode)
-    .replace(/^(.*)$/gm, (linea) => {
-      const raros = (linea.match(/[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9\s\/\.\-,]/g) || []).length;
-      return raros / Math.max(linea.length, 1) > 0.4 ? '' : linea;
-    })
-    // Palabras inventadas largas sin vocales (artefactos OCR)
-    .replace(/\b[^aeiouáéíóúAEIOUÁÉÍÓÚ\s]{5,}\b/g, '')
-    // Líneas que empiezan con números/símbolos raros antes del texto real
-    .replace(/^[\d\W]{1,4}\s+(?=[a-záéíóúA-ZÁÉÍÓÚ])/gm, '')
-    // Elimina caracteres aislados raros al inicio de línea
-    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9"'¿¡(\-]{1,3}\s/gm, '')
-    // Horarios solos en línea
+    // Horarios solos en una línea (18:28, 14:41)
     .replace(/^\d{1,2}[.:]\d{2}\s*$/gm, '')
-    // Comas o puntos sueltos al final
+    // Horarios pegados al final del texto
+    .replace(/\s+\d{1,2}[.:]\d{2}\s*$/gm, '')
+    // Líneas de 1-2 caracteres sin letras reales (avatares, íconos leídos como O, 0, etc)
+    .replace(/^.{1,2}$/gm, '')
+    // Caracteres aislados raros al inicio de línea
+    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9"'¿¡(\-]{1,2}\s/gm, '')
+    // Comas o puntos sueltos al final de línea (emojis de reacción)
     .replace(/\s*[,\.]\s*$/gm, '')
     // Puntuación repetida
     .replace(/([.,;]){2,}/g, '$1')
@@ -385,6 +279,7 @@ function cleanOCRText(text) {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
+
 // Sincronizar textarea con state
 ocrTextarea.addEventListener('input', () => {
   state.ocrText = ocrTextarea.value;
