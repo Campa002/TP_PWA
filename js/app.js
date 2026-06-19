@@ -186,7 +186,11 @@ async function runOCR(imageUrl) {
     });
 
     await worker.setParameters({
-      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzáéíóúÁÉÍÓÚüÜñÑ0123456789.,;:!?()-/\'"% \n',
+      // Sin whitelist: dejar que Tesseract reconozca todo y limpiar después
+      // PSM 6 = bloque de texto uniforme (ideal para documentos, DNIs, etiquetas)
+      tessedit_pageseg_mode: '6',
+      // Mejora la precisión en documentos con texto pequeño
+      preserve_interword_spaces: '1',
     });
 
     const { data: { text } } = await worker.recognize(resizedUrl);
@@ -354,29 +358,22 @@ function cleanOCRText(text) {
     // Elimina emojis unicode
     .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
     .replace(/[\u{2600}-\u{27BF}]/gu, '')
-    // Símbolos raros
+    // Símbolos raros (pero conservamos / . - , para fechas y números de documento)
     .replace(/[©®°•·✓→←↑↓★☆♦♣♠♥@#$%^&*_=<>~`|\\{}[\]]/g, '')
-    // Líneas que son ruido de código de barras o foto (mayoría no alfanumérico)
-    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9\/\.\-]{4,}$/gm, '')
-    // Líneas cortas de 1-2 caracteres
-    .replace(/^.{1,2}$/gm, '')
-    // Letras mayúsculas sueltas separadas por espacios (ruido foto DNI)
-    .replace(/^([A-Z]\s){3,}.*$/gm, '')
-    // Líneas con más de 40% de caracteres raros (ruido firma/barcode)
-    .replace(/^(.*)$/gm, (linea) => {
-      const raros = (linea.match(/[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9\s\/\.\-,]/g) || []).length;
-      return raros / Math.max(linea.length, 1) > 0.4 ? '' : linea;
+    // Líneas que son puro ruido (mayoría no alfanumérico), pero no si tienen dígitos largos (nro doc)
+    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9\/\.\-]{4,}$/gm, (linea) => {
+      // Conservar si parece un número de documento (6+ dígitos)
+      return /\d{6,}/.test(linea) ? linea : '';
     })
-    // Palabras inventadas largas sin vocales (artefactos OCR)
-    .replace(/\b[^aeiouáéíóúAEIOUÁÉÍÓÚ\s]{5,}\b/g, '')
-    // Líneas que empiezan con números/símbolos raros antes del texto real
-    .replace(/^[\d\W]{1,4}\s+(?=[a-záéíóúA-ZÁÉÍÓÚ])/gm, '')
-    // Elimina caracteres aislados raros al inicio de línea
-    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9"'¿¡(\-]{1,3}\s/gm, '')
-    // Horarios solos en línea
-    .replace(/^\d{1,2}[.:]\d{2}\s*$/gm, '')
-    // Comas o puntos sueltos al final
-    .replace(/\s*[,\.]\s*$/gm, '')
+    // Líneas de 1 solo carácter (ruido)
+    .replace(/^.{1}$/gm, '')
+    // Líneas con más de 50% de caracteres raros (ruido firma/barcode)
+    // Umbral más alto que antes para no eliminar líneas con mezcla de idiomas
+    .replace(/^(.*)$/gm, (linea) => {
+      if (linea.trim().length < 3) return linea;
+      const raros = (linea.match(/[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9\s\/\.\-,]/g) || []).length;
+      return raros / Math.max(linea.length, 1) > 0.5 ? '' : linea;
+    })
     // Puntuación repetida
     .replace(/([.,;]){2,}/g, '$1')
     // Espacios múltiples
