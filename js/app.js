@@ -166,12 +166,8 @@ document.addEventListener('visibilitychange', () => {
 
 async function runOCR(imageUrl) {
   try {
-    const resizedUrl = await resizeImage(imageUrl);
-
-    // Detectar orientación para elegir PSM adecuado
-    const img = new Image();
-    await new Promise(r => { img.onload = r; img.src = resizedUrl; });
-    const psm = img.width > img.height ? '3' : '6';
+    // Redimensionar imagen antes de OCR (evita error de memoria)
+    const resizedUrl = await resizeImage(imageUrl, 1800);
 
     const worker = await Tesseract.createWorker('spa+eng', 1, {
       logger: m => {
@@ -190,7 +186,10 @@ async function runOCR(imageUrl) {
     });
 
     await worker.setParameters({
-      tessedit_pageseg_mode: psm,
+      // Sin whitelist: dejar que Tesseract reconozca todo y limpiar después
+      // PSM 6 = bloque de texto uniforme (ideal para documentos, DNIs, etiquetas)
+      tessedit_pageseg_mode: '6',
+      // Mejora la precisión en documentos con texto pequeño
       preserve_interword_spaces: '1',
     });
 
@@ -220,6 +219,7 @@ async function runOCR(imageUrl) {
     }, 3000);
   }
 }
+
 // Redimensiona la imagen a un ancho máximo antes de procesar
 function resizeImage(url) {
   return new Promise((resolve) => {
@@ -229,6 +229,7 @@ function resizeImage(url) {
       const isPWA = window.matchMedia('(display-mode: standalone)').matches;
       const maxDim = (esMobil || isPWA) ? 1400 : 2000;
 
+      // Paso 1: dibujar imagen completa
       let w = img.width;
       let h = img.height;
       if (w > maxDim || h > maxDim) {
@@ -237,7 +238,6 @@ function resizeImage(url) {
         h = Math.round(h * ratio);
       }
 
-      // Paso 1: dibujar imagen completa
       const canvas = document.createElement('canvas');
       canvas.width = w;
       canvas.height = h;
@@ -254,38 +254,47 @@ function resizeImage(url) {
       }
       ctx.putImageData(imageData, 0, 0);
 
-      // Paso 3: detectar bounding box del contenido
+      // Paso 3: detectar bounding box del contenido (recorte automático)
+      // Buscar filas con varianza alta (tienen texto/contenido)
       let top = 0, bottom = h - 1, left = 0, right = w - 1;
-      const margen = 20;
+      const margen = 20; // px de margen extra alrededor del contenido
 
+      // Buscar fila superior con contenido
       for (let y = 0; y < h; y++) {
         let varianza = 0;
         for (let x = 0; x < w; x++) {
-          varianza += Math.abs(data[(y * w + x) * 4] - 128);
+          const idx = (y * w + x) * 4;
+          varianza += Math.abs(data[idx] - 128);
         }
         if (varianza / w > 25) { top = Math.max(0, y - margen); break; }
       }
 
+      // Buscar fila inferior con contenido
       for (let y = h - 1; y >= 0; y--) {
         let varianza = 0;
         for (let x = 0; x < w; x++) {
-          varianza += Math.abs(data[(y * w + x) * 4] - 128);
+          const idx = (y * w + x) * 4;
+          varianza += Math.abs(data[idx] - 128);
         }
         if (varianza / w > 15) { bottom = Math.min(h - 1, y + margen); break; }
       }
 
+      // Buscar columna izquierda con contenido
       for (let x = 0; x < w; x++) {
         let varianza = 0;
         for (let y = top; y < bottom; y++) {
-          varianza += Math.abs(data[(y * w + x) * 4] - 128);
+          const idx = (y * w + x) * 4;
+          varianza += Math.abs(data[idx] - 128);
         }
         if (varianza / (bottom - top) > 15) { left = Math.max(0, x - margen); break; }
       }
 
+      // Buscar columna derecha con contenido
       for (let x = w - 1; x >= 0; x--) {
         let varianza = 0;
         for (let y = top; y < bottom; y++) {
-          varianza += Math.abs(data[(y * w + x) * 4] - 128);
+          const idx = (y * w + x) * 4;
+          varianza += Math.abs(data[idx] - 128);
         }
         if (varianza / (bottom - top) > 15) { right = Math.min(w - 1, x + margen); break; }
       }
@@ -300,18 +309,17 @@ function resizeImage(url) {
       const ctx2 = canvas2.getContext('2d');
       ctx2.drawImage(canvas, left, top, cropW, cropH, 0, 0, cropW, cropH);
 
-      // Paso 5: binarización adaptativa
+      // Paso 5: binarización adaptativa sobre la zona recortada
       const id2 = ctx2.getImageData(0, 0, cropW, cropH);
       const d2 = id2.data;
       const blockSize = 32;
 
-      // Contraste moderado (1.3 en lugar de 1.8 para no destruir fondos de color)
+      // Aumentar contraste para mejorar separación texto/fondo
       for (let i = 0; i < d2.length; i += 4) {
-        const val = Math.min(255, Math.max(0, (d2[i] - 128) * 1.3 + 128));
+        const val = Math.min(255, Math.max(0, (d2[i] - 128) * 1.8 + 128));
         d2[i] = d2[i+1] = d2[i+2] = val;
       }
 
-      // Umbral adaptativo más suave (0.9 en lugar de 0.85)
       for (let by = 0; by < cropH; by += blockSize) {
         for (let bx = 0; bx < cropW; bx += blockSize) {
           let sum = 0, count = 0;
@@ -322,7 +330,7 @@ function resizeImage(url) {
               count++;
             }
           }
-          const threshold = (sum / count) * 0.9;
+          const threshold = (sum / count) * 0.85;
           for (let dy = 0; dy < blockSize && by+dy < cropH; dy++) {
             for (let dx = 0; dx < blockSize && bx+dx < cropW; dx++) {
               const idx = ((by+dy)*cropW + (bx+dx)) * 4;
