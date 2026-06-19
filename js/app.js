@@ -113,7 +113,6 @@ inputGallery.addEventListener('change', e => handleImageFile(e.target.files[0]))
 
 async function runOCR(imageUrl) {
   try {
-    // Redimensionar imagen antes de OCR (evita error de memoria)
     const resizedUrl = await resizeImage(imageUrl, 1800);
 
     const worker = await Tesseract.createWorker('spa+eng', 1, {
@@ -169,73 +168,17 @@ function resizeImage(url, maxWidth) {
     img.onload = () => {
       const esMobil = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
       const isPWA = window.matchMedia('(display-mode: standalone)').matches;
-      const limite = (esMobil || isPWA) ? 1100 : 1800;
+      const limite = (esMobil || isPWA) ? 1000 : maxWidth;
 
-      // Sin mínimo forzado — si la imagen ya es chica, no escalar
-      const targetWidth = Math.min(img.width, limite);
-      const scale = targetWidth / img.width;
-      const w = Math.round(img.width * scale);
-      const h = Math.round(img.height * scale);
-
+      const scale = img.width > limite ? limite / img.width : 1;
       const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
+      canvas.width  = Math.round(img.width  * scale);
+      canvas.height = Math.round(img.height * scale);
       const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, w, h);
-
-      const imageData = ctx.getImageData(0, 0, w, h);
-      const data = imageData.data;
-
-      // Detectar fondo claro muestreando fila superior
-      let sumaBorde = 0, muestras = 0;
-      for (let x = 0; x < w * 4; x += 4) {
-        sumaBorde += (data[x] + data[x+1] + data[x+2]) / 3;
-        muestras++;
-      }
-      const fondoClaro = (sumaBorde / muestras) > 150;
-
-      if (fondoClaro) {
-        for (let i = 0; i < data.length; i += 4) {
-          const gris = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
-          const val = Math.min(255, Math.max(0, (gris - 128) * 2.0 + 128));
-          data[i] = data[i+1] = data[i+2] = val;
-          data[i+3] = 255;
-        }
-      } else {
-        const blockSize = 16;
-        for (let by = 0; by < h; by += blockSize) {
-          for (let bx = 0; bx < w; bx += blockSize) {
-            let sum = 0, count = 0;
-            for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
-              for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
-                const idx = ((by+dy)*w + (bx+dx)) * 4;
-                sum += (data[idx] + data[idx+1] + data[idx+2]) / 3;
-                count++;
-              }
-            }
-            const threshold = (sum / count) - 15;
-            for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
-              for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
-                const idx = ((by+dy)*w + (bx+dx)) * 4;
-                const avg = (data[idx] + data[idx+1] + data[idx+2]) / 3;
-                const val = avg < threshold ? 0 : 255;
-                data[idx] = data[idx+1] = data[idx+2] = val;
-                data[idx+3] = 255;
-              }
-            }
-          }
-        }
-      }
-
-      ctx.putImageData(imageData, 0, 0);
-
-      // JPEG en lugar de PNG — 5x menos memoria
-      const resultado = canvas.toDataURL('image/jpeg', 0.85);
-
-      // Liberar canvas de memoria
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const resultado = canvas.toDataURL('image/jpeg', 0.9);
       canvas.width = 0;
       canvas.height = 0;
-
       resolve(resultado);
     };
     img.src = url;
@@ -244,22 +187,20 @@ function resizeImage(url, maxWidth) {
 
 function cleanOCRText(text) {
   return text
-    // Bullets al inicio de línea (•, e sola, *, o letra O sola)
+    // Bullets al inicio de línea
     .replace(/^[\s]*[•e\-\*]\s+/gm, '- ')
-    // Elimina emojis unicode completos
+    // Elimina emojis unicode
     .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
     .replace(/[\u{2600}-\u{27BF}]/gu, '')
-    // Símbolos OCR de emojis mal leídos
+    // Símbolos raros
     .replace(/[©®°•·✓→←↑↓★☆♦♣♠♥@#$%^&*_=<>~`|\\{}[\]]/g, '')
-    // Horarios solos en una línea (18:28, 14:41)
+    // Horarios solos en línea
     .replace(/^\d{1,2}[.:]\d{2}\s*$/gm, '')
-    // Horarios pegados al final del texto
+    // Horarios pegados al final
     .replace(/\s+\d{1,2}[.:]\d{2}\s*$/gm, '')
-    // Líneas de 1-2 caracteres sin letras reales (avatares, íconos leídos como O, 0, etc)
+    // Líneas de 1-2 caracteres
     .replace(/^.{1,2}$/gm, '')
-    // Caracteres aislados raros al inicio de línea
-    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9"'¿¡(\-]{1,2}\s/gm, '')
-    // Comas o puntos sueltos al final de línea (emojis de reacción)
+    // Comas sueltas al final
     .replace(/\s*[,\.]\s*$/gm, '')
     // Puntuación repetida
     .replace(/([.,;]){2,}/g, '$1')
