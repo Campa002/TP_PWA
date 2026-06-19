@@ -167,10 +167,11 @@ function resizeImage(url, maxWidth) {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
-      // En PWA instalada usar máximo 1200px para no agotar memoria
+      // Detectar móvil por user agent
+      const esMobil = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
       const isPWA = window.matchMedia('(display-mode: standalone)').matches;
-      const limite = isPWA ? 1200 : 1800;
-      const targetWidth = Math.max(Math.min(img.width, limite), 800);
+      const limite = (esMobil || isPWA) ? 1000 : 1800;
+      const targetWidth = Math.max(Math.min(img.width, limite), 600);
       const scale = targetWidth / img.width;
       const w = Math.round(img.width * scale);
       const h = Math.round(img.height * scale);
@@ -193,7 +194,7 @@ function resizeImage(url, maxWidth) {
       const fondoClaro = (sumaBorde / muestras) > 150;
 
       if (fondoClaro) {
-        // Documento/diagrama: escala de grises + contraste suave, sin binarizar
+        // Documento/diagrama: escala de grises + contraste, sin binarizar
         for (let i = 0; i < data.length; i += 4) {
           const gris = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
           const val = Math.min(255, Math.max(0, (gris - 128) * 2.0 + 128));
@@ -228,7 +229,7 @@ function resizeImage(url, maxWidth) {
       }
 
       ctx.putImageData(imageData, 0, 0);
-      resolve(canvas.toDataURL('image/png'));
+      resolve(canvas.toDataURL('image/jpeg', 0.85));
     };
     img.src = url;
   });
