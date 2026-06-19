@@ -225,7 +225,7 @@ function resizeImage(url) {
       const isPWA = window.matchMedia('(display-mode: standalone)').matches;
       const maxDim = (esMobil || isPWA) ? 1400 : 2000;
 
-      // Escalar manteniendo proporción
+      // Paso 1: dibujar imagen completa
       let w = img.width;
       let h = img.height;
       if (w > maxDim || h > maxDim) {
@@ -243,70 +243,98 @@ function resizeImage(url) {
       const imageData = ctx.getImageData(0, 0, w, h);
       const data = imageData.data;
 
-      // Convertir a escala de grises primero
+      // Paso 2: convertir a grises
       for (let i = 0; i < data.length; i += 4) {
-        const gris = Math.round(0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2]);
-        data[i] = data[i+1] = data[i+2] = gris;
+        const g = Math.round(0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2]);
+        data[i] = data[i+1] = data[i+2] = g;
       }
-
-      // Detectar fondo claro (documentos, DNI, tickets)
-      let sumaFila = 0;
-      for (let x = 0; x < w * 4; x += 4) sumaFila += data[x];
-      const promFila = sumaFila / w;
-      const fondoClaro = promFila > 140;
-
-      if (fondoClaro) {
-        // Binarización adaptativa por bloques — mejor para DNI y tickets
-        const blockSize = 32;
-        for (let by = 0; by < h; by += blockSize) {
-          for (let bx = 0; bx < w; bx += blockSize) {
-            let sum = 0, count = 0;
-            for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
-              for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
-                const idx = ((by+dy)*w + (bx+dx)) * 4;
-                sum += data[idx];
-                count++;
-              }
-            }
-            const threshold = (sum / count) * 0.85;
-            for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
-              for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
-                const idx = ((by+dy)*w + (bx+dx)) * 4;
-                const val = data[idx] < threshold ? 0 : 255;
-                data[idx] = data[idx+1] = data[idx+2] = val;
-              }
-            }
-          }
-        }
-      } else {
-        // Fondo oscuro: binarización con umbral fijo alto
-        const blockSize = 16;
-        for (let by = 0; by < h; by += blockSize) {
-          for (let bx = 0; bx < w; bx += blockSize) {
-            let sum = 0, count = 0;
-            for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
-              for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
-                const idx = ((by+dy)*w + (bx+dx)) * 4;
-                sum += data[idx];
-                count++;
-              }
-            }
-            const threshold = (sum / count) - 15;
-            for (let dy = 0; dy < blockSize && by+dy < h; dy++) {
-              for (let dx = 0; dx < blockSize && bx+dx < w; dx++) {
-                const idx = ((by+dy)*w + (bx+dx)) * 4;
-                const val = data[idx] < threshold ? 0 : 255;
-                data[idx] = data[idx+1] = data[idx+2] = val;
-              }
-            }
-          }
-        }
-      }
-
       ctx.putImageData(imageData, 0, 0);
-      const resultado = canvas.toDataURL('image/jpeg', 0.92);
-      canvas.width = 1;
-      canvas.height = 1;
+
+      // Paso 3: detectar bounding box del contenido (recorte automático)
+      // Buscar filas con varianza alta (tienen texto/contenido)
+      let top = 0, bottom = h - 1, left = 0, right = w - 1;
+      const margen = 20; // px de margen extra alrededor del contenido
+
+      // Buscar fila superior con contenido
+      for (let y = 0; y < h; y++) {
+        let varianza = 0;
+        for (let x = 0; x < w; x++) {
+          const idx = (y * w + x) * 4;
+          varianza += Math.abs(data[idx] - 128);
+        }
+        if (varianza / w > 15) { top = Math.max(0, y - margen); break; }
+      }
+
+      // Buscar fila inferior con contenido
+      for (let y = h - 1; y >= 0; y--) {
+        let varianza = 0;
+        for (let x = 0; x < w; x++) {
+          const idx = (y * w + x) * 4;
+          varianza += Math.abs(data[idx] - 128);
+        }
+        if (varianza / w > 15) { bottom = Math.min(h - 1, y + margen); break; }
+      }
+
+      // Buscar columna izquierda con contenido
+      for (let x = 0; x < w; x++) {
+        let varianza = 0;
+        for (let y = top; y < bottom; y++) {
+          const idx = (y * w + x) * 4;
+          varianza += Math.abs(data[idx] - 128);
+        }
+        if (varianza / (bottom - top) > 15) { left = Math.max(0, x - margen); break; }
+      }
+
+      // Buscar columna derecha con contenido
+      for (let x = w - 1; x >= 0; x--) {
+        let varianza = 0;
+        for (let y = top; y < bottom; y++) {
+          const idx = (y * w + x) * 4;
+          varianza += Math.abs(data[idx] - 128);
+        }
+        if (varianza / (bottom - top) > 15) { right = Math.min(w - 1, x + margen); break; }
+      }
+
+      const cropW = right - left;
+      const cropH = bottom - top;
+
+      // Paso 4: dibujar solo la zona recortada
+      const canvas2 = document.createElement('canvas');
+      canvas2.width = cropW;
+      canvas2.height = cropH;
+      const ctx2 = canvas2.getContext('2d');
+      ctx2.drawImage(canvas, left, top, cropW, cropH, 0, 0, cropW, cropH);
+
+      // Paso 5: binarización adaptativa sobre la zona recortada
+      const id2 = ctx2.getImageData(0, 0, cropW, cropH);
+      const d2 = id2.data;
+      const blockSize = 32;
+
+      for (let by = 0; by < cropH; by += blockSize) {
+        for (let bx = 0; bx < cropW; bx += blockSize) {
+          let sum = 0, count = 0;
+          for (let dy = 0; dy < blockSize && by+dy < cropH; dy++) {
+            for (let dx = 0; dx < blockSize && bx+dx < cropW; dx++) {
+              const idx = ((by+dy)*cropW + (bx+dx)) * 4;
+              sum += d2[idx];
+              count++;
+            }
+          }
+          const threshold = (sum / count) * 0.85;
+          for (let dy = 0; dy < blockSize && by+dy < cropH; dy++) {
+            for (let dx = 0; dx < blockSize && bx+dx < cropW; dx++) {
+              const idx = ((by+dy)*cropW + (bx+dx)) * 4;
+              const val = d2[idx] < threshold ? 0 : 255;
+              d2[idx] = d2[idx+1] = d2[idx+2] = val;
+            }
+          }
+        }
+      }
+      ctx2.putImageData(id2, 0, 0);
+
+      const resultado = canvas2.toDataURL('image/jpeg', 0.92);
+      canvas.width = 1; canvas.height = 1;
+      canvas2.width = 1; canvas2.height = 1;
       resolve(resultado);
     };
     img.src = url;
