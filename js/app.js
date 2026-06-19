@@ -262,7 +262,7 @@ function resizeImage(url) {
           const idx = (y * w + x) * 4;
           varianza += Math.abs(data[idx] - 128);
         }
-        if (varianza / w > 15) { top = Math.max(0, y - margen); break; }
+        if (varianza / w > 25) { top = Math.max(0, y - margen); break; }
       }
 
       // Buscar fila inferior con contenido
@@ -310,6 +310,12 @@ function resizeImage(url) {
       const d2 = id2.data;
       const blockSize = 32;
 
+      // Aumentar contraste para mejorar separación texto/fondo
+      for (let i = 0; i < d2.length; i += 4) {
+        const val = Math.min(255, Math.max(0, (d2[i] - 128) * 1.8 + 128));
+        d2[i] = d2[i+1] = d2[i+2] = val;
+      }
+
       for (let by = 0; by < cropH; by += blockSize) {
         for (let bx = 0; bx < cropW; bx += blockSize) {
           let sum = 0, count = 0;
@@ -344,6 +350,10 @@ function resizeImage(url) {
 function cleanOCRText(text) {
   return text
     // Bullets al inicio de línea (•, e sola, *, o letra O sola)
+    // Elimina líneas cortas con mayoría de caracteres raros (ruido de fondo/foto)
+    .replace(/^(?:[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9\/\.\-]{1,3}|.{1,2})$/gm, '')
+    // Elimina secuencias largas de mayúsculas sueltas separadas por espacios (ruido OCR)
+    .replace(/^([A-Z]\s){4,}.*$/gm, '')
     .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9]{4,}$/gm, '')
     .replace(/^[\s]*[•e\-\*]\s+/gm, '- ')
     // Elimina emojis unicode completos
