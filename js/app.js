@@ -187,15 +187,26 @@ async function runOCR(imageUrl) {
 
     await worker.setParameters({
       tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzáéíóúÁÉÍÓÚüÜñÑ0123456789.,;:!?()-/\'"% \n',
+      // PSM "sparse text": busca bloques de texto sin asumir una estructura
+      // de página (columnas, tablas, renglones). Con esto NO intenta leer
+      // la cuadrícula del papel, los bordes de objetos o el fondo como si
+      // fueran texto estructurado -> mucho menos ruido/basura en el resultado.
+      tessedit_pageseg_mode: (window.Tesseract && Tesseract.PSM) ? Tesseract.PSM.SPARSE_TEXT : '11',
     });
 
-    const { data: { text } } = await worker.recognize(resizedUrl);
+    const { data } = await worker.recognize(resizedUrl);
     await worker.terminate();
 
     progressBar.style.width = '100%';
     ocrStatusText.textContent = '¡Texto reconocido con éxito!';
 
-    state.ocrText = cleanOCRText(text);
+    // En vez de usar data.text "a ciegas", se reconstruye el texto solo con
+    // las líneas que Tesseract reconoció con buena confianza Y que tienen
+    // mayoría de caracteres alfanuméricos. Así se descartan automáticamente
+    // los renglones-basura generados por la cuadrícula, sombras u objetos
+    // sueltos de la foto (que suelen salir con confianza muy baja o llenos
+    // de símbolos sin sentido).
+    state.ocrText = cleanOCRText(extractConfidentText(data));
     ocrTextarea.value = state.ocrText;
 
     setTimeout(() => {
@@ -227,18 +238,25 @@ function resizeImage(url, maxWidth) {
       const w = Math.round(img.width * scale);
       const h = Math.round(img.height * scale);
 
-      // Paso 1: dibujar en canvas grande con filtros
+      // Paso 1: escala de grises + un leve desenfoque (blur). El blur
+      // "diluye" las líneas finas de la cuadrícula/renglones del papel y
+      // las motas/sombras del fondo (mesa, objetos), pero NO afecta el
+      // grosor real de la tinta de la escritura/impresión, que es más
+      // gruesa. Esto evita que la cuadrícula se confunda con texto.
       const canvas = document.createElement('canvas');
       canvas.width = w;
       canvas.height = h;
       const ctx = canvas.getContext('2d');
-      ctx.filter = 'grayscale(1) contrast(2) brightness(1.15)';
+      ctx.filter = 'grayscale(1) brightness(1.1) blur(1px)';
       ctx.drawImage(img, 0, 0, w, h);
 
-      // Paso 2: binarización manual píxel a píxel (umbral)
+      // Paso 2: umbral automático (método de Otsu) en vez de un valor fijo
+      // (antes 140). Un valor fijo falla según la iluminación de cada foto
+      // (mesa más clara, sombras, etc.); Otsu calcula el mejor corte
+      // blanco/negro para CADA imagen en particular.
       const imageData = ctx.getImageData(0, 0, w, h);
       const data = imageData.data;
-      const threshold = 140;
+      const threshold = otsuThreshold(data);
       for (let i = 0; i < data.length; i += 4) {
         const avg = (data[i] + data[i+1] + data[i+2]) / 3;
         const val = avg > threshold ? 255 : 0;
@@ -246,18 +264,107 @@ function resizeImage(url, maxWidth) {
       }
       ctx.putImageData(imageData, 0, 0);
 
-      // Paso 3: segundo pasaje con sharpen via convolución 3x3
-      const sharpened = document.createElement('canvas');
-      sharpened.width = w;
-      sharpened.height = h;
-      const sCtx = sharpened.getContext('2d');
-      sCtx.filter = 'contrast(1.3)';
-      sCtx.drawImage(canvas, 0, 0);
+      // Paso 3: limpieza de ruido — borra píxeles negros aislados (puntitos
+      // de la mesa, bordes residuales de la cuadrícula, motas) que no
+      // forman parte de un trazo real de escritura.
+      denoiseBinary(ctx, w, h);
 
-      resolve(sharpened.toDataURL('image/png'));
+      resolve(canvas.toDataURL('image/png'));
     };
     img.src = url;
   });
+}
+
+// Calcula el mejor umbral blanco/negro para la imagen (método de Otsu),
+// en vez de usar un número fijo que no se adapta a la luz de cada foto.
+function otsuThreshold(data) {
+  const histogram = new Array(256).fill(0);
+  let total = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const avg = (data[i] + data[i+1] + data[i+2]) / 3 | 0;
+    histogram[avg]++;
+    total++;
+  }
+
+  let sum = 0;
+  for (let t = 0; t < 256; t++) sum += t * histogram[t];
+
+  let sumB = 0, wB = 0, maxVar = 0, threshold = 140; // 140 = fallback
+  for (let t = 0; t < 256; t++) {
+    wB += histogram[t];
+    if (wB === 0) continue;
+    const wF = total - wB;
+    if (wF === 0) break;
+    sumB += t * histogram[t];
+    const mB = sumB / wB;
+    const mF = (sum - sumB) / wF;
+    const varBetween = wB * wF * (mB - mF) * (mB - mF);
+    if (varBetween > maxVar) {
+      maxVar = varBetween;
+      threshold = t;
+    }
+  }
+  return threshold;
+}
+
+// Elimina píxeles negros "sueltos" (sin trazo real alrededor) en una
+// imagen ya binarizada (blanco/negro). Lo que sobrevive son los trazos
+// continuos de la escritura/impresión real.
+function denoiseBinary(ctx, w, h) {
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const data = imageData.data;
+  const copy = new Uint8ClampedArray(data);
+
+  const getVal = (x, y) => {
+    if (x < 0 || x >= w || y < 0 || y >= h) return 255;
+    return copy[(y * w + x) * 4];
+  };
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = (y * w + x) * 4;
+      if (copy[idx] === 0) {
+        let blackNeighbors = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            if (getVal(x + dx, y + dy) === 0) blackNeighbors++;
+          }
+        }
+        // Si casi no tiene vecinos negros, es ruido aislado -> se blanquea
+        if (blackNeighbors < 2) {
+          data[idx] = data[idx + 1] = data[idx + 2] = 255;
+        }
+      }
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+// Reconstruye el texto final usando solo las líneas que Tesseract
+// reconoció con confianza razonable Y que tienen mayoría de caracteres
+// alfanuméricos. Esto descarta los renglones-basura (símbolos sueltos,
+// cuadrícula, ruido de fondo) sin tocar el texto real.
+function extractConfidentText(data) {
+  const MIN_CONFIDENCE = 55;
+  const MIN_ALNUM_RATIO = 0.5;
+
+  const lines = (data && data.lines && data.lines.length)
+    ? data.lines
+    : null;
+
+  if (!lines) return data ? data.text : '';
+
+  return lines
+    .map(line => ({ text: (line.text || '').trim(), confidence: line.confidence }))
+    .filter(line => {
+      if (!line.text) return false;
+      const alnum = (line.text.match(/[a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9]/g) || []).length;
+      const ratio = alnum / line.text.length;
+      return line.confidence >= MIN_CONFIDENCE && ratio >= MIN_ALNUM_RATIO;
+    })
+    .map(line => line.text)
+    .join('\n');
 }
 
 function cleanOCRText(text) {
