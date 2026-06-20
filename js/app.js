@@ -271,12 +271,12 @@ function resizeImage(url) {
       for (let x = 0; x < w; x++) {
         let varianza = 0;
         for (let y = top; y < bottom; y++) varianza += Math.abs(data[(y*w+x)*4] - 128);
-        if (varianza / (bottom - top) > 15) { left = Math.max(0, x - margen); break; }
+        if (varianza / (bottom - top) > 30) { left = Math.max(0, x - margen); break; }
       }
       for (let x = w - 1; x >= 0; x--) {
         let varianza = 0;
         for (let y = top; y < bottom; y++) varianza += Math.abs(data[(y*w+x)*4] - 128);
-        if (varianza / (bottom - top) > 15) { right = Math.min(w - 1, x + margen); break; }
+        if (varianza / (bottom - top) > 30) { right = Math.min(w - 1, x + margen); break; }
       }
 
       const cropW = right - left;
@@ -289,28 +289,16 @@ function resizeImage(url) {
       const ctx2 = canvas2.getContext('2d');
       ctx2.drawImage(canvas, left, top, cropW, cropH, 0, 0, cropW, cropH);
 
-      // Paso 5: detectar si la imagen ya tiene buen contraste (ej: DNI, documento blanco)
+      // Paso 5: calcular stdDev solo sobre el centro (evita que el fondo distorsione)
       const id2 = ctx2.getImageData(0, 0, cropW, cropH);
       const d2 = id2.data;
 
-      // Calcular contraste promedio de la imagen recortada
-      let sumPixel = 0;
-      let sumCuad = 0;
-      const totalPx = cropW * cropH;
-      for (let i = 0; i < d2.length; i += 4) {
-        sumPixel += d2[i];
-        sumCuad += d2[i] * d2[i];
-      }
-      const media = sumPixel / totalPx;
-      const stdDev = Math.sqrt(sumCuad / totalPx - media * media);
-      // Calcular stdDev solo sobre el centro de la imagen (evita que el fondo distorsione)
       const cx = Math.floor(cropW * 0.25);
       const cy = Math.floor(cropH * 0.25);
       const cw = Math.floor(cropW * 0.5);
       const ch = Math.floor(cropH * 0.5);
 
-      let sumPixel = 0, sumCuad = 0;
-      let totalPx = 0;
+      let sumPixel = 0, sumCuad = 0, totalPx = 0;
       for (let y = cy; y < cy + ch; y++) {
         for (let x = cx; x < cx + cw; x++) {
           const v = d2[(y * cropW + x) * 4];
@@ -322,17 +310,15 @@ function resizeImage(url) {
       const media = sumPixel / totalPx;
       const stdDev = Math.sqrt(sumCuad / totalPx - media * media);
 
-      // stdDev alto (>60) = imagen ya tiene buen contraste → solo ajuste leve, sin binarizar
-      // stdDev bajo (<60) = imagen con bajo contraste (etiqueta colorida) → binarizar
+      // stdDev > 60 = buen contraste (DNI, doc blanco) → ajuste leve, sin binarizar
+      // stdDev < 60 = bajo contraste (etiqueta colorida) → binarización
       if (stdDev > 60) {
-        // Solo leve ajuste de contraste, sin binarización (conserva trazos finos)
         for (let i = 0; i < d2.length; i += 4) {
           const val = Math.min(255, Math.max(0, (d2[i] - media) * 1.2 + media));
           d2[i] = d2[i+1] = d2[i+2] = val;
         }
         ctx2.putImageData(id2, 0, 0);
       } else {
-        // Contraste moderado + binarización para imágenes con fondo de color
         for (let i = 0; i < d2.length; i += 4) {
           const val = Math.min(255, Math.max(0, (d2[i] - 128) * 1.3 + 128));
           d2[i] = d2[i+1] = d2[i+2] = val;
