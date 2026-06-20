@@ -166,40 +166,51 @@ document.addEventListener('visibilitychange', () => {
 
 async function runOCR(imageUrl) {
   try {
-    // Redimensionar imagen antes de OCR (evita error de memoria)
-    const resizedUrl = await resizeImage(imageUrl, 1800);
+    ocrStatus.classList.remove('hidden');
+    progressBar.style.width = '10%';
+    ocrStatusText.textContent = 'Preparando imagen…';
 
-    const worker = await Tesseract.createWorker('spa+eng', 1, {
-      logger: m => {
-        if (m.status === 'recognizing text') {
-          const pct = Math.round(m.progress * 100);
-          progressBar.style.width = pct + '%';
-          ocrStatusText.textContent = `Reconociendo texto… ${pct}%`;
-        } else if (m.status === 'loading language traineddata') {
-          ocrStatusText.textContent = 'Cargando modelo de idioma…';
-          progressBar.style.width = '20%';
-        } else if (m.status === 'initializing api') {
-          ocrStatusText.textContent = 'Inicializando motor OCR…';
-          progressBar.style.width = '5%';
-        }
-      }
+    const base64 = await imageToBase64(imageUrl);
+
+    progressBar.style.width = '40%';
+    ocrStatusText.textContent = 'Reconociendo texto con IA…';
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1000,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/jpeg', data: base64 }
+            },
+            {
+              type: 'text',
+              text: 'Extraé todo el texto visible en esta imagen, exactamente como aparece. Conservá el orden de lectura natural. No agregues explicaciones ni comentarios, devolvé solo el texto.'
+            }
+          ]
+        }]
+      })
     });
 
-    await worker.setParameters({
-      // Sin whitelist: dejar que Tesseract reconozca todo y limpiar después
-      // PSM 6 = bloque de texto uniforme (ideal para documentos, DNIs, etiquetas)
-      tessedit_pageseg_mode: '6',
-      // Mejora la precisión en documentos con texto pequeño
-      preserve_interword_spaces: '1',
-    });
+    progressBar.style.width = '90%';
 
-    const { data: { text } } = await worker.recognize(resizedUrl);
-    await worker.terminate();
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.error?.message || 'Error en la API');
+    }
+
+    const data = await response.json();
+    const text = data.content?.find(b => b.type === 'text')?.text || '';
 
     progressBar.style.width = '100%';
     ocrStatusText.textContent = '¡Texto reconocido con éxito!';
 
-    state.ocrText = cleanOCRText(text);
+    state.ocrText = text.trim();
     ocrTextarea.value = state.ocrText;
 
     setTimeout(() => {
@@ -210,7 +221,7 @@ async function runOCR(imageUrl) {
 
   } catch (err) {
     console.error('[OCR] error:', err);
-    ocrStatusText.textContent = 'Error al procesar la imagen. Intentá con una foto más pequeña.';
+    ocrStatusText.textContent = `Error: ${err.message}`;
     progressBar.style.width = '100%';
     progressBar.style.background = 'var(--red)';
     setTimeout(() => {
@@ -221,14 +232,12 @@ async function runOCR(imageUrl) {
 }
 
 // Redimensiona la imagen a un ancho máximo antes de procesar
-function resizeImage(url) {
-  return new Promise((resolve) => {
+function imageToBase64(url) {
+  return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
-      const esMobil = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-      const isPWA = window.matchMedia('(display-mode: standalone)').matches;
-      const maxDim = (esMobil || isPWA) ? 1400 : 2000;
-
+      // Redimensionar a máximo 1600px para no exceder el límite de la API
+      const maxDim = 1600;
       let w = img.width;
       let h = img.height;
       if (w > maxDim || h > maxDim) {
@@ -237,157 +246,24 @@ function resizeImage(url) {
         h = Math.round(h * ratio);
       }
 
-      // Paso 1: dibujar imagen completa
       const canvas = document.createElement('canvas');
       canvas.width = w;
       canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, w, h);
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
 
-      const imageData = ctx.getImageData(0, 0, w, h);
-      const data = imageData.data;
+      // Sacar el prefijo "data:image/jpeg;base64," y quedarse solo con los datos
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+      resolve(dataUrl.split(',')[1]);
 
-      // Paso 2: convertir a grises
-      for (let i = 0; i < data.length; i += 4) {
-        const g = Math.round(0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2]);
-        data[i] = data[i+1] = data[i+2] = g;
-      }
-      ctx.putImageData(imageData, 0, 0);
-
-      // Paso 3: detectar bounding box del contenido
-      let top = 0, bottom = h - 1, left = 0, right = w - 1;
-      const margen = 20;
-
-      for (let y = 0; y < h; y++) {
-        let varianza = 0;
-        for (let x = 0; x < w; x++) varianza += Math.abs(data[(y*w+x)*4] - 128);
-        if (varianza / w > 40) { top = Math.max(0, y - margen); break; }
-      }
-      for (let y = h - 1; y >= 0; y--) {
-        let varianza = 0;
-        for (let x = 0; x < w; x++) varianza += Math.abs(data[(y*w+x)*4] - 128);
-        if (varianza / w > 30) { bottom = Math.min(h - 1, y + margen); break; }
-      }
-      for (let x = 0; x < w; x++) {
-        let varianza = 0;
-        for (let y = top; y < bottom; y++) varianza += Math.abs(data[(y*w+x)*4] - 128);
-        if (varianza / (bottom - top) > 30) { left = Math.max(0, x - margen); break; }
-      }
-      for (let x = w - 1; x >= 0; x--) {
-        let varianza = 0;
-        for (let y = top; y < bottom; y++) varianza += Math.abs(data[(y*w+x)*4] - 128);
-        if (varianza / (bottom - top) > 30) { right = Math.min(w - 1, x + margen); break; }
-      }
-
-      const cropW = right - left;
-      const cropH = bottom - top;
-
-      // Paso 4: zona recortada
-      const canvas2 = document.createElement('canvas');
-      canvas2.width = cropW;
-      canvas2.height = cropH;
-      const ctx2 = canvas2.getContext('2d');
-      ctx2.drawImage(canvas, left, top, cropW, cropH, 0, 0, cropW, cropH);
-
-      // Paso 5: calcular stdDev solo sobre el centro (evita que el fondo distorsione)
-      const id2 = ctx2.getImageData(0, 0, cropW, cropH);
-      const d2 = id2.data;
-
-      const cx = Math.floor(cropW * 0.25);
-      const cy = Math.floor(cropH * 0.25);
-      const cw = Math.floor(cropW * 0.5);
-      const ch = Math.floor(cropH * 0.5);
-
-      let sumPixel = 0, sumCuad = 0, totalPx = 0;
-      for (let y = cy; y < cy + ch; y++) {
-        for (let x = cx; x < cx + cw; x++) {
-          const v = d2[(y * cropW + x) * 4];
-          sumPixel += v;
-          sumCuad += v * v;
-          totalPx++;
-        }
-      }
-      const media = sumPixel / totalPx;
-      const stdDev = Math.sqrt(sumCuad / totalPx - media * media);
-
-      // stdDev > 60 = buen contraste (DNI, doc blanco) → ajuste leve, sin binarizar
-      // stdDev < 60 = bajo contraste (etiqueta colorida) → binarización
-      if (stdDev > 60) {
-        for (let i = 0; i < d2.length; i += 4) {
-          const val = Math.min(255, Math.max(0, (d2[i] - media) * 1.2 + media));
-          d2[i] = d2[i+1] = d2[i+2] = val;
-        }
-        ctx2.putImageData(id2, 0, 0);
-      } else {
-        for (let i = 0; i < d2.length; i += 4) {
-          const val = Math.min(255, Math.max(0, (d2[i] - 128) * 1.3 + 128));
-          d2[i] = d2[i+1] = d2[i+2] = val;
-        }
-        ctx2.putImageData(id2, 0, 0);
-
-        const id3 = ctx2.getImageData(0, 0, cropW, cropH);
-        const d3 = id3.data;
-        const blockSize = 32;
-        for (let by = 0; by < cropH; by += blockSize) {
-          for (let bx = 0; bx < cropW; bx += blockSize) {
-            let sum = 0, count = 0;
-            for (let dy = 0; dy < blockSize && by+dy < cropH; dy++)
-              for (let dx = 0; dx < blockSize && bx+dx < cropW; dx++) {
-                sum += d3[((by+dy)*cropW + (bx+dx)) * 4];
-                count++;
-              }
-            const threshold = (sum / count) * 0.9;
-            for (let dy = 0; dy < blockSize && by+dy < cropH; dy++)
-              for (let dx = 0; dx < blockSize && bx+dx < cropW; dx++) {
-                const idx = ((by+dy)*cropW + (bx+dx)) * 4;
-                const val = d3[idx] < threshold ? 0 : 255;
-                d3[idx] = d3[idx+1] = d3[idx+2] = val;
-              }
-          }
-        }
-        ctx2.putImageData(id3, 0, 0);
-      }
-
-      const resultado = canvas2.toDataURL('image/jpeg', 0.92);
-      canvas.width = 1; canvas.height = 1;
-      canvas2.width = 1; canvas2.height = 1;
-      resolve(resultado);
+      canvas.width = 1;
+      canvas.height = 1;
     };
+    img.onerror = () => reject(new Error('No se pudo cargar la imagen'));
     img.src = url;
   });
 }
 
-function cleanOCRText(text) {
-  return text
-    // Bullets al inicio de línea
-    .replace(/^[\s]*[•e\-\*]\s+/gm, '- ')
-    // Elimina emojis unicode
-    .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
-    .replace(/[\u{2600}-\u{27BF}]/gu, '')
-    // Símbolos raros (conservamos / . - , para fechas y números de documento)
-    .replace(/[©®°•·✓→←↑↓★☆♦♣♠♥@#$%^&*_=<>~`|\\{}[\]]/g, '')
-    // Líneas que son puro ruido (mayoría no alfanumérico), pero conserva nros de documento
-    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9\/\.\-]{4,}$/gm, (linea) => {
-      return /\d{6,}/.test(linea) ? linea : '';
-    })
-    // Líneas de 1 solo carácter (ruido)
-    .replace(/^.{1}$/gm, '')
-    // Líneas con patrón de letras/números sueltos separados por espacios (ruido de firma superpuesta)
-    .replace(/^(\S{1,2}\s){3,}\S{0,2}$/gm, '')
-    // Líneas con más de 50% de caracteres raros (ruido firma/barcode)
-    .replace(/^(.*)$/gm, (linea) => {
-      if (linea.trim().length < 3) return linea;
-      const raros = (linea.match(/[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9\s\/\.\-,]/g) || []).length;
-      return raros / Math.max(linea.length, 1) > 0.5 ? '' : linea;
-    })
-    // Puntuación repetida
-    .replace(/([.,;]){2,}/g, '$1')
-    // Espacios múltiples
-    .replace(/[ \t]{2,}/g, ' ')
-    // Saltos excesivos
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
+
 
 // Sincronizar textarea con state
 ocrTextarea.addEventListener('input', () => {
