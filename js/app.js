@@ -261,12 +261,12 @@ function resizeImage(url) {
       for (let y = 0; y < h; y++) {
         let varianza = 0;
         for (let x = 0; x < w; x++) varianza += Math.abs(data[(y*w+x)*4] - 128);
-        if (varianza / w > 25) { top = Math.max(0, y - margen); break; }
+        if (varianza / w > 40) { top = Math.max(0, y - margen); break; }
       }
       for (let y = h - 1; y >= 0; y--) {
         let varianza = 0;
         for (let x = 0; x < w; x++) varianza += Math.abs(data[(y*w+x)*4] - 128);
-        if (varianza / w > 15) { bottom = Math.min(h - 1, y + margen); break; }
+        if (varianza / w > 30) { bottom = Math.min(h - 1, y + margen); break; }
       }
       for (let x = 0; x < w; x++) {
         let varianza = 0;
@@ -300,6 +300,24 @@ function resizeImage(url) {
       for (let i = 0; i < d2.length; i += 4) {
         sumPixel += d2[i];
         sumCuad += d2[i] * d2[i];
+      }
+      const media = sumPixel / totalPx;
+      const stdDev = Math.sqrt(sumCuad / totalPx - media * media);
+      // Calcular stdDev solo sobre el centro de la imagen (evita que el fondo distorsione)
+      const cx = Math.floor(cropW * 0.25);
+      const cy = Math.floor(cropH * 0.25);
+      const cw = Math.floor(cropW * 0.5);
+      const ch = Math.floor(cropH * 0.5);
+
+      let sumPixel = 0, sumCuad = 0;
+      let totalPx = 0;
+      for (let y = cy; y < cy + ch; y++) {
+        for (let x = cx; x < cx + cw; x++) {
+          const v = d2[(y * cropW + x) * 4];
+          sumPixel += v;
+          sumCuad += v * v;
+          totalPx++;
+        }
       }
       const media = sumPixel / totalPx;
       const stdDev = Math.sqrt(sumCuad / totalPx - media * media);
