@@ -229,7 +229,6 @@ function resizeImage(url) {
       const isPWA = window.matchMedia('(display-mode: standalone)').matches;
       const maxDim = (esMobil || isPWA) ? 1400 : 2000;
 
-      // Paso 1: dibujar imagen completa
       let w = img.width;
       let h = img.height;
       if (w > maxDim || h > maxDim) {
@@ -238,6 +237,7 @@ function resizeImage(url) {
         h = Math.round(h * ratio);
       }
 
+      // Paso 1: dibujar imagen completa
       const canvas = document.createElement('canvas');
       canvas.width = w;
       canvas.height = h;
@@ -254,93 +254,95 @@ function resizeImage(url) {
       }
       ctx.putImageData(imageData, 0, 0);
 
-      // Paso 3: detectar bounding box del contenido (recorte automático)
-      // Buscar filas con varianza alta (tienen texto/contenido)
+      // Paso 3: detectar bounding box del contenido
       let top = 0, bottom = h - 1, left = 0, right = w - 1;
-      const margen = 20; // px de margen extra alrededor del contenido
+      const margen = 20;
 
-      // Buscar fila superior con contenido
       for (let y = 0; y < h; y++) {
         let varianza = 0;
-        for (let x = 0; x < w; x++) {
-          const idx = (y * w + x) * 4;
-          varianza += Math.abs(data[idx] - 128);
-        }
+        for (let x = 0; x < w; x++) varianza += Math.abs(data[(y*w+x)*4] - 128);
         if (varianza / w > 25) { top = Math.max(0, y - margen); break; }
       }
-
-      // Buscar fila inferior con contenido
       for (let y = h - 1; y >= 0; y--) {
         let varianza = 0;
-        for (let x = 0; x < w; x++) {
-          const idx = (y * w + x) * 4;
-          varianza += Math.abs(data[idx] - 128);
-        }
+        for (let x = 0; x < w; x++) varianza += Math.abs(data[(y*w+x)*4] - 128);
         if (varianza / w > 15) { bottom = Math.min(h - 1, y + margen); break; }
       }
-
-      // Buscar columna izquierda con contenido
       for (let x = 0; x < w; x++) {
         let varianza = 0;
-        for (let y = top; y < bottom; y++) {
-          const idx = (y * w + x) * 4;
-          varianza += Math.abs(data[idx] - 128);
-        }
+        for (let y = top; y < bottom; y++) varianza += Math.abs(data[(y*w+x)*4] - 128);
         if (varianza / (bottom - top) > 15) { left = Math.max(0, x - margen); break; }
       }
-
-      // Buscar columna derecha con contenido
       for (let x = w - 1; x >= 0; x--) {
         let varianza = 0;
-        for (let y = top; y < bottom; y++) {
-          const idx = (y * w + x) * 4;
-          varianza += Math.abs(data[idx] - 128);
-        }
+        for (let y = top; y < bottom; y++) varianza += Math.abs(data[(y*w+x)*4] - 128);
         if (varianza / (bottom - top) > 15) { right = Math.min(w - 1, x + margen); break; }
       }
 
       const cropW = right - left;
       const cropH = bottom - top;
 
-      // Paso 4: dibujar solo la zona recortada
+      // Paso 4: zona recortada
       const canvas2 = document.createElement('canvas');
       canvas2.width = cropW;
       canvas2.height = cropH;
       const ctx2 = canvas2.getContext('2d');
       ctx2.drawImage(canvas, left, top, cropW, cropH, 0, 0, cropW, cropH);
 
-      // Paso 5: binarización adaptativa sobre la zona recortada
+      // Paso 5: detectar si la imagen ya tiene buen contraste (ej: DNI, documento blanco)
       const id2 = ctx2.getImageData(0, 0, cropW, cropH);
       const d2 = id2.data;
-      const blockSize = 32;
 
-      // Aumentar contraste para mejorar separación texto/fondo
+      // Calcular contraste promedio de la imagen recortada
+      let sumPixel = 0;
+      let sumCuad = 0;
+      const totalPx = cropW * cropH;
       for (let i = 0; i < d2.length; i += 4) {
-        const val = Math.min(255, Math.max(0, (d2[i] - 128) * 1.8 + 128));
-        d2[i] = d2[i+1] = d2[i+2] = val;
+        sumPixel += d2[i];
+        sumCuad += d2[i] * d2[i];
       }
+      const media = sumPixel / totalPx;
+      const stdDev = Math.sqrt(sumCuad / totalPx - media * media);
 
-      for (let by = 0; by < cropH; by += blockSize) {
-        for (let bx = 0; bx < cropW; bx += blockSize) {
-          let sum = 0, count = 0;
-          for (let dy = 0; dy < blockSize && by+dy < cropH; dy++) {
-            for (let dx = 0; dx < blockSize && bx+dx < cropW; dx++) {
-              const idx = ((by+dy)*cropW + (bx+dx)) * 4;
-              sum += d2[idx];
-              count++;
-            }
-          }
-          const threshold = (sum / count) * 0.85;
-          for (let dy = 0; dy < blockSize && by+dy < cropH; dy++) {
-            for (let dx = 0; dx < blockSize && bx+dx < cropW; dx++) {
-              const idx = ((by+dy)*cropW + (bx+dx)) * 4;
-              const val = d2[idx] < threshold ? 0 : 255;
-              d2[idx] = d2[idx+1] = d2[idx+2] = val;
-            }
+      // stdDev alto (>60) = imagen ya tiene buen contraste → solo ajuste leve, sin binarizar
+      // stdDev bajo (<60) = imagen con bajo contraste (etiqueta colorida) → binarizar
+      if (stdDev > 60) {
+        // Solo leve ajuste de contraste, sin binarización (conserva trazos finos)
+        for (let i = 0; i < d2.length; i += 4) {
+          const val = Math.min(255, Math.max(0, (d2[i] - media) * 1.2 + media));
+          d2[i] = d2[i+1] = d2[i+2] = val;
+        }
+        ctx2.putImageData(id2, 0, 0);
+      } else {
+        // Contraste moderado + binarización para imágenes con fondo de color
+        for (let i = 0; i < d2.length; i += 4) {
+          const val = Math.min(255, Math.max(0, (d2[i] - 128) * 1.3 + 128));
+          d2[i] = d2[i+1] = d2[i+2] = val;
+        }
+        ctx2.putImageData(id2, 0, 0);
+
+        const id3 = ctx2.getImageData(0, 0, cropW, cropH);
+        const d3 = id3.data;
+        const blockSize = 32;
+        for (let by = 0; by < cropH; by += blockSize) {
+          for (let bx = 0; bx < cropW; bx += blockSize) {
+            let sum = 0, count = 0;
+            for (let dy = 0; dy < blockSize && by+dy < cropH; dy++)
+              for (let dx = 0; dx < blockSize && bx+dx < cropW; dx++) {
+                sum += d3[((by+dy)*cropW + (bx+dx)) * 4];
+                count++;
+              }
+            const threshold = (sum / count) * 0.9;
+            for (let dy = 0; dy < blockSize && by+dy < cropH; dy++)
+              for (let dx = 0; dx < blockSize && bx+dx < cropW; dx++) {
+                const idx = ((by+dy)*cropW + (bx+dx)) * 4;
+                const val = d3[idx] < threshold ? 0 : 255;
+                d3[idx] = d3[idx+1] = d3[idx+2] = val;
+              }
           }
         }
+        ctx2.putImageData(id3, 0, 0);
       }
-      ctx2.putImageData(id2, 0, 0);
 
       const resultado = canvas2.toDataURL('image/jpeg', 0.92);
       canvas.width = 1; canvas.height = 1;
