@@ -173,39 +173,34 @@ async function runOCR(imageUrl) {
     const base64 = await imageToBase64(imageUrl);
 
     progressBar.style.width = '40%';
-    ocrStatusText.textContent = 'Reconociendo texto con IA…';
+    ocrStatusText.textContent = 'Reconociendo texto…';
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const formData = new FormData();
+    formData.append('base64Image', 'data:image/jpeg;base64,' + base64);
+    formData.append('apikey', 'K82098428088957');
+    formData.append('language', 'spa');            // español
+    formData.append('isOverlayRequired', 'false');
+    formData.append('detectOrientation', 'true');  // corrige si la foto está rotada
+    formData.append('scale', 'true');              // mejora imágenes de baja resolución
+    formData.append('OCREngine', '2');             // motor 2 = mejor para fotos reales
+
+    const response = await fetch('https://api.ocr.space/parse/image', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1000,
-        messages: [{
-          role: 'user',
-          content: [
-            {
-              type: 'image',
-              source: { type: 'base64', media_type: 'image/jpeg', data: base64 }
-            },
-            {
-              type: 'text',
-              text: 'Extraé todo el texto visible en esta imagen, exactamente como aparece. Conservá el orden de lectura natural. No agregues explicaciones ni comentarios, devolvé solo el texto.'
-            }
-          ]
-        }]
-      })
+      body: formData
     });
 
     progressBar.style.width = '90%';
 
-    if (!response.ok) {
-      const err = await response.json();
-      throw new Error(err.error?.message || 'Error en la API');
-    }
+    if (!response.ok) throw new Error('Error de conexión con OCR.space');
 
     const data = await response.json();
-    const text = data.content?.find(b => b.type === 'text')?.text || '';
+
+    if (data.IsErroredOnProcessing) {
+      throw new Error(data.ErrorMessage?.[0] || 'Error al procesar la imagen');
+    }
+
+    const text = data.ParsedResults?.[0]?.ParsedText || '';
+    if (!text.trim()) throw new Error('No se detectó texto en la imagen');
 
     progressBar.style.width = '100%';
     ocrStatusText.textContent = '¡Texto reconocido con éxito!';
@@ -236,7 +231,6 @@ function imageToBase64(url) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
-      // Redimensionar a máximo 1600px para no exceder el límite de la API
       const maxDim = 1600;
       let w = img.width;
       let h = img.height;
@@ -245,16 +239,12 @@ function imageToBase64(url) {
         w = Math.round(w * ratio);
         h = Math.round(h * ratio);
       }
-
       const canvas = document.createElement('canvas');
       canvas.width = w;
       canvas.height = h;
       canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-
-      // Sacar el prefijo "data:image/jpeg;base64," y quedarse solo con los datos
       const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
       resolve(dataUrl.split(',')[1]);
-
       canvas.width = 1;
       canvas.height = 1;
     };
@@ -262,7 +252,6 @@ function imageToBase64(url) {
     img.src = url;
   });
 }
-
 
 
 // Sincronizar textarea con state
