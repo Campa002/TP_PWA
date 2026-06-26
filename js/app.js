@@ -166,46 +166,40 @@ document.addEventListener('visibilitychange', () => {
 
 async function runOCR(imageUrl) {
   try {
-    ocrStatus.classList.remove('hidden');
-    progressBar.style.width = '10%';
-    ocrStatusText.textContent = 'Preparando imagen…';
+    // Redimensionar imagen antes de OCR (evita error de memoria)
+    const resizedUrl = await resizeImage(imageUrl, 1800);
 
-    const base64 = await imageToBase64(imageUrl);
-
-    progressBar.style.width = '40%';
-    ocrStatusText.textContent = 'Reconociendo texto…';
-
-    const formData = new FormData();
-    formData.append('base64Image', 'data:image/jpeg;base64,' + base64);
-    formData.append('apikey', 'TU_API_KEY_AQUI'); // reemplazá con tu key
-    formData.append('language', 'spa');            // español
-    formData.append('isOverlayRequired', 'false');
-    formData.append('detectOrientation', 'true');  // corrige si la foto está rotada
-    formData.append('scale', 'true');              // mejora imágenes de baja resolución
-    formData.append('OCREngine', '2');             // motor 2 = mejor para fotos reales
-
-    const response = await fetch('https://api.ocr.space/parse/image', {
-      method: 'POST',
-      body: formData
+    const worker = await Tesseract.createWorker('spa+eng', 1, {
+      logger: m => {
+        if (m.status === 'recognizing text') {
+          const pct = Math.round(m.progress * 100);
+          progressBar.style.width = pct + '%';
+          ocrStatusText.textContent = `Reconociendo texto… ${pct}%`;
+        } else if (m.status === 'loading language traineddata') {
+          ocrStatusText.textContent = 'Cargando modelo de idioma…';
+          progressBar.style.width = '20%';
+        } else if (m.status === 'initializing api') {
+          ocrStatusText.textContent = 'Inicializando motor OCR…';
+          progressBar.style.width = '5%';
+        }
+      }
     });
 
-    progressBar.style.width = '90%';
+    await worker.setParameters({
+      // Sin whitelist: dejar que Tesseract reconozca todo y limpiar después
+      // PSM 6 = bloque de texto uniforme (ideal para documentos, DNIs, etiquetas)
+      tessedit_pageseg_mode: '6',
+      // Mejora la precisión en documentos con texto pequeño
+      preserve_interword_spaces: '1',
+    });
 
-    if (!response.ok) throw new Error('Error de conexión con OCR.space');
-
-    const data = await response.json();
-
-    if (data.IsErroredOnProcessing) {
-      throw new Error(data.ErrorMessage?.[0] || 'Error al procesar la imagen');
-    }
-
-    const text = data.ParsedResults?.[0]?.ParsedText || '';
-    if (!text.trim()) throw new Error('No se detectó texto en la imagen');
+    const { data: { text } } = await worker.recognize(resizedUrl);
+    await worker.terminate();
 
     progressBar.style.width = '100%';
     ocrStatusText.textContent = '¡Texto reconocido con éxito!';
 
-    state.ocrText = text.trim();
+    state.ocrText = cleanOCRText(text);
     ocrTextarea.value = state.ocrText;
 
     setTimeout(() => {
@@ -216,7 +210,7 @@ async function runOCR(imageUrl) {
 
   } catch (err) {
     console.error('[OCR] error:', err);
-    ocrStatusText.textContent = `Error: ${err.message}`;
+    ocrStatusText.textContent = 'Error al procesar la imagen. Intentá con una foto más pequeña.';
     progressBar.style.width = '100%';
     progressBar.style.background = 'var(--red)';
     setTimeout(() => {
