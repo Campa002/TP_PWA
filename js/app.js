@@ -52,7 +52,7 @@ const recordsEmpty  = $('records-empty');
 const recordsList   = $('records-list');
 const btnInstall    = $('btn-install');
 const offlineBanner = $('offline-banner');
-
+const inputCamera = $('input-camera');
 
 // ─── SERVICE WORKER ──────────────────────────
 if ('serviceWorker' in navigator) {
@@ -115,22 +115,24 @@ inputGallery.addEventListener('change', e => handleImageFile(e.target.files[0]))
 // Evita abrir la app de cámara nativa de Android, que es lo que dispara
 // el error "No se ha podido completar la operación anterior por falta de memoria".
 btnCamera.addEventListener('click', async () => {
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    alert('Tu navegador no soporta acceso directo a la cámara.');
-    return;
+  const esMobil = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+  if (esMobil && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    try {
+      cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+      cameraVideo.srcObject = cameraStream;
+      cameraContainer.classList.remove('hidden');
+      captureZone.classList.add('hidden');
+      return;
+    } catch (err) {
+      console.warn('[Camera] MediaDevices falló, usando input nativo');
+    }
   }
-  try {
-    cameraStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
-      audio: false,
-    });
-    cameraVideo.srcObject = cameraStream;
-    cameraContainer.classList.remove('hidden');
-    captureZone.classList.add('hidden');
-  } catch (err) {
-    console.error('[Cámara] error:', err);
-    alert('No se pudo acceder a la cámara. Revisá los permisos en la configuración del navegador.');
-  }
+  // PC o fallback: input file nativo
+  inputCamera.click();
 });
 
 function stopCameraStream() {
@@ -229,6 +231,7 @@ function resizeImage(url) {
       const isPWA = window.matchMedia('(display-mode: standalone)').matches;
       const maxDim = (esMobil || isPWA) ? 1400 : 2000;
 
+      // Paso 1: dibujar imagen completa
       let w = img.width;
       let h = img.height;
       if (w > maxDim || h > maxDim) {
@@ -237,7 +240,6 @@ function resizeImage(url) {
         h = Math.round(h * ratio);
       }
 
-      // Paso 1: dibujar imagen completa
       const canvas = document.createElement('canvas');
       canvas.width = w;
       canvas.height = h;
@@ -254,99 +256,91 @@ function resizeImage(url) {
       }
       ctx.putImageData(imageData, 0, 0);
 
-      // Paso 3: detectar bounding box del contenido
+      // Paso 3: detectar bounding box del contenido (recorte automático)
+      // Buscar filas con varianza alta (tienen texto/contenido)
       let top = 0, bottom = h - 1, left = 0, right = w - 1;
-      const margen = 20;
+      const margen = 20; // px de margen extra alrededor del contenido
 
+      // Buscar fila superior con contenido
       for (let y = 0; y < h; y++) {
         let varianza = 0;
-        for (let x = 0; x < w; x++) varianza += Math.abs(data[(y*w+x)*4] - 128);
-        if (varianza / w > 40) { top = Math.max(0, y - margen); break; }
+        for (let x = 0; x < w; x++) {
+          const idx = (y * w + x) * 4;
+          varianza += Math.abs(data[idx] - 128);
+        }
+        if (varianza / w > 15) { top = Math.max(0, y - margen); break; }
       }
+
+      // Buscar fila inferior con contenido
       for (let y = h - 1; y >= 0; y--) {
         let varianza = 0;
-        for (let x = 0; x < w; x++) varianza += Math.abs(data[(y*w+x)*4] - 128);
-        if (varianza / w > 30) { bottom = Math.min(h - 1, y + margen); break; }
+        for (let x = 0; x < w; x++) {
+          const idx = (y * w + x) * 4;
+          varianza += Math.abs(data[idx] - 128);
+        }
+        if (varianza / w > 15) { bottom = Math.min(h - 1, y + margen); break; }
       }
+
+      // Buscar columna izquierda con contenido
       for (let x = 0; x < w; x++) {
         let varianza = 0;
-        for (let y = top; y < bottom; y++) varianza += Math.abs(data[(y*w+x)*4] - 128);
-        if (varianza / (bottom - top) > 30) { left = Math.max(0, x - margen); break; }
+        for (let y = top; y < bottom; y++) {
+          const idx = (y * w + x) * 4;
+          varianza += Math.abs(data[idx] - 128);
+        }
+        if (varianza / (bottom - top) > 15) { left = Math.max(0, x - margen); break; }
       }
+
+      // Buscar columna derecha con contenido
       for (let x = w - 1; x >= 0; x--) {
         let varianza = 0;
-        for (let y = top; y < bottom; y++) varianza += Math.abs(data[(y*w+x)*4] - 128);
-        if (varianza / (bottom - top) > 30) { right = Math.min(w - 1, x + margen); break; }
+        for (let y = top; y < bottom; y++) {
+          const idx = (y * w + x) * 4;
+          varianza += Math.abs(data[idx] - 128);
+        }
+        if (varianza / (bottom - top) > 15) { right = Math.min(w - 1, x + margen); break; }
       }
 
       const cropW = right - left;
       const cropH = bottom - top;
 
-      // Paso 4: zona recortada
+      // Paso 4: dibujar solo la zona recortada
       const canvas2 = document.createElement('canvas');
       canvas2.width = cropW;
       canvas2.height = cropH;
       const ctx2 = canvas2.getContext('2d');
       ctx2.drawImage(canvas, left, top, cropW, cropH, 0, 0, cropW, cropH);
 
-      // Paso 5: calcular stdDev solo sobre el centro (evita que el fondo distorsione)
+      // Paso 5: binarización adaptativa sobre la zona recortada
       const id2 = ctx2.getImageData(0, 0, cropW, cropH);
       const d2 = id2.data;
-
-      const cx = Math.floor(cropW * 0.25);
-      const cy = Math.floor(cropH * 0.25);
-      const cw = Math.floor(cropW * 0.5);
-      const ch = Math.floor(cropH * 0.5);
-
-      let sumPixel = 0, sumCuad = 0, totalPx = 0;
-      for (let y = cy; y < cy + ch; y++) {
-        for (let x = cx; x < cx + cw; x++) {
-          const v = d2[(y * cropW + x) * 4];
-          sumPixel += v;
-          sumCuad += v * v;
-          totalPx++;
-        }
+      for (let i = 0; i < d2.length; i += 4) {
+        const val = Math.min(255, Math.max(0, (d2[i] - 128) * 1.8 + 128));
+        d2[i] = d2[i+1] = d2[i+2] = val;
       }
-      const media = sumPixel / totalPx;
-      const stdDev = Math.sqrt(sumCuad / totalPx - media * media);
+      const blockSize = 32;
 
-      // stdDev > 60 = buen contraste (DNI, doc blanco) → ajuste leve, sin binarizar
-      // stdDev < 60 = bajo contraste (etiqueta colorida) → binarización
-      if (stdDev > 60) {
-        for (let i = 0; i < d2.length; i += 4) {
-          const val = Math.min(255, Math.max(0, (d2[i] - media) * 1.2 + media));
-          d2[i] = d2[i+1] = d2[i+2] = val;
-        }
-        ctx2.putImageData(id2, 0, 0);
-      } else {
-        for (let i = 0; i < d2.length; i += 4) {
-          const val = Math.min(255, Math.max(0, (d2[i] - 128) * 1.3 + 128));
-          d2[i] = d2[i+1] = d2[i+2] = val;
-        }
-        ctx2.putImageData(id2, 0, 0);
-
-        const id3 = ctx2.getImageData(0, 0, cropW, cropH);
-        const d3 = id3.data;
-        const blockSize = 32;
-        for (let by = 0; by < cropH; by += blockSize) {
-          for (let bx = 0; bx < cropW; bx += blockSize) {
-            let sum = 0, count = 0;
-            for (let dy = 0; dy < blockSize && by+dy < cropH; dy++)
-              for (let dx = 0; dx < blockSize && bx+dx < cropW; dx++) {
-                sum += d3[((by+dy)*cropW + (bx+dx)) * 4];
-                count++;
-              }
-            const threshold = (sum / count) * 0.9;
-            for (let dy = 0; dy < blockSize && by+dy < cropH; dy++)
-              for (let dx = 0; dx < blockSize && bx+dx < cropW; dx++) {
-                const idx = ((by+dy)*cropW + (bx+dx)) * 4;
-                const val = d3[idx] < threshold ? 0 : 255;
-                d3[idx] = d3[idx+1] = d3[idx+2] = val;
-              }
+      for (let by = 0; by < cropH; by += blockSize) {
+        for (let bx = 0; bx < cropW; bx += blockSize) {
+          let sum = 0, count = 0;
+          for (let dy = 0; dy < blockSize && by+dy < cropH; dy++) {
+            for (let dx = 0; dx < blockSize && bx+dx < cropW; dx++) {
+              const idx = ((by+dy)*cropW + (bx+dx)) * 4;
+              sum += d2[idx];
+              count++;
+            }
+          }
+          const threshold = (sum / count) * 0.85;
+          for (let dy = 0; dy < blockSize && by+dy < cropH; dy++) {
+            for (let dx = 0; dx < blockSize && bx+dx < cropW; dx++) {
+              const idx = ((by+dy)*cropW + (bx+dx)) * 4;
+              const val = d2[idx] < threshold ? 0 : 255;
+              d2[idx] = d2[idx+1] = d2[idx+2] = val;
+            }
           }
         }
-        ctx2.putImageData(id3, 0, 0);
       }
+      ctx2.putImageData(id2, 0, 0);
 
       const resultado = canvas2.toDataURL('image/jpeg', 0.92);
       canvas.width = 1; canvas.height = 1;
@@ -364,22 +358,29 @@ function cleanOCRText(text) {
     // Elimina emojis unicode
     .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
     .replace(/[\u{2600}-\u{27BF}]/gu, '')
-    // Símbolos raros (conservamos / . - , para fechas y números de documento)
+    // Símbolos raros
     .replace(/[©®°•·✓→←↑↓★☆♦♣♠♥@#$%^&*_=<>~`|\\{}[\]]/g, '')
-    // Líneas que son puro ruido (mayoría no alfanumérico), pero conserva nros de documento
-    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9\/\.\-]{4,}$/gm, (linea) => {
-      return /\d{6,}/.test(linea) ? linea : '';
-    })
-    // Líneas de 1 solo carácter (ruido)
-    .replace(/^.{1}$/gm, '')
-    // Líneas con patrón de letras/números sueltos separados por espacios (ruido de firma superpuesta)
-    .replace(/^(\S{1,2}\s){3,}\S{0,2}$/gm, '')
-    // Líneas con más de 50% de caracteres raros (ruido firma/barcode)
+    // Líneas que son ruido de código de barras o foto (mayoría no alfanumérico)
+    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9\/\.\-]{4,}$/gm, '')
+    // Líneas cortas de 1-2 caracteres
+    .replace(/^.{1,2}$/gm, '')
+    // Letras mayúsculas sueltas separadas por espacios (ruido foto DNI)
+    .replace(/^([A-Z]\s){3,}.*$/gm, '')
+    // Líneas que empiezan con números/símbolos raros antes del texto real
+    .replace(/^[\d\W]{1,4}\s+(?=[a-záéíóúA-ZÁÉÍÓÚ])/gm, '')
+    // Líneas que son ruido de código de barras o foto (mayoría no alfanumérico)
+    .replace(/^[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9\/\.\-]{4,}$/gm, '')
+    // Líneas cortas de 1-2 caracteres
+    .replace(/^.{1,2}$/gm, '')
+    // Letras mayúsculas sueltas separadas por espacios (ruido foto DNI)
+    .replace(/^([A-Z]\s){3,}.*$/gm, '')
+    // Líneas con más de 40% de caracteres raros (ruido firma/barcode)
     .replace(/^(.*)$/gm, (linea) => {
-      if (linea.trim().length < 3) return linea;
       const raros = (linea.match(/[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9\s\/\.\-,]/g) || []).length;
-      return raros / Math.max(linea.length, 1) > 0.5 ? '' : linea;
+      return raros / Math.max(linea.length, 1) > 0.4 ? '' : linea;
     })
+    // Palabras inventadas largas sin vocales (artefactos OCR)
+    .replace(/\b[^aeiouáéíóúAEIOUÁÉÍÓÚ\s]{5,}\b/g, '')
     // Puntuación repetida
     .replace(/([.,;]){2,}/g, '$1')
     // Espacios múltiples
